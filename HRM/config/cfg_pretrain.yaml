@@ -11,15 +11,15 @@ hydra:
 data_path: ../Dataset/janus_m15_dataset.parquet
 
 # Hyperparams - Training
-global_batch_size: 1024
+global_batch_size: 512
 
-epochs: 180
-eval_interval: 5
+epochs: 15
+eval_interval: 3
 checkpoint_every_eval: True
 
-lr: 3e-4
+lr: 1e-4
 lr_min_ratio: 0.1
-lr_warmup_steps: 1000
+lr_warmup_steps: 0  # computed in code as 10% of total steps
 
 # Standard hyperparameter settings for LM, as used in Llama
 beta1: 0.9

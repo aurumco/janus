@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 import wandb
 import matplotlib
@@ -32,9 +32,9 @@ class TrainConfig:
     data_path: str
     arch_name: str
     loss_name: str
-    global_batch_size: int = 1024
-    epochs: int = 180
-    eval_interval: int = 5
+    global_batch_size: int = 512
+    epochs: int = 100
+    eval_interval: int = 3
     lr: float = 3e-4
     weight_decay: float = 1e-2
     lr_min_ratio: float = 0.1
@@ -244,9 +244,9 @@ def main():
         data_path=str(data_path),
         arch_name=str(arch_cfg["name"]),
         loss_name=str(arch_cfg["loss"]["name"]),
-        global_batch_size=_i(raw.get("global_batch_size", 1024), 1024),
+        global_batch_size=_i(raw.get("global_batch_size", 512), 512),
         epochs=_i(raw.get("epochs", 180), 180),
-        eval_interval=_i(raw.get("eval_interval", 5), 5),
+        eval_interval=_i(raw.get("eval_interval", 3), 3),
         lr=_f(raw.get("lr", 3e-4), 3e-4),
         weight_decay=_f(raw.get("weight_decay", 1e-2), 1e-2),
         project_name="Janus-V4",
@@ -332,9 +332,9 @@ def main():
     model: nn.Module = loss_head_cls(
         base_model,
         loss_type="focal_loss",
-        alpha=0.25,
-        gamma=2.0,
-        class_weights=[1.5, 1.2, 0.5, 1.2, 1.5],
+        alpha=0.75,
+        gamma=1.5,
+        class_weights=[1.8, 1.3, 0.4, 1.3, 1.8],
         q_loss_weight=0.1,
     )
     model = model.to(device)
@@ -346,18 +346,33 @@ def main():
 
     # Optimizer and scheduler
     optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    T_max = max(1, (cfg.epochs // cfg.eval_interval) * len(train_loader))
-    scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=cfg.lr * cfg.lr_min_ratio)
+    # Warmup (10% of total steps) + cosine to lr_min_ratio
+    total_steps = max(1, cfg.epochs * len(train_loader))
+    warmup_steps = int(0.1 * total_steps) if int(os.environ.get("LR_WARMUP_STEPS", "0")) == 0 else int(os.environ["LR_WARMUP_STEPS"])  # allow override via env
+    warmup_steps = max(1, warmup_steps)
+    min_lr = cfg.lr * cfg.lr_min_ratio
+    import math as _math
+    def _lr_lambda(step: int):
+        if step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+        # cosine decay from 1.0 to min_lr/cfg.lr
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = min(1.0, float(step - warmup_steps) / float(decay_steps))
+        cosine = 0.5 * (1.0 + _math.cos(_math.pi * progress))
+        scale = (min_lr / cfg.lr) + (1.0 - (min_lr / cfg.lr)) * cosine
+        return scale
+    scheduler = LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
     # Logging
     wandb.init(project=cfg.project_name, name=cfg.run_name, settings=wandb.Settings(_disable_stats=True))
     wandb.config.update({"seq_len": INPUT_WINDOW_CANDLES, "num_features": num_features})
     wandb.watch(model, log="all", log_freq=100)
-    print(f"[info] Training config | epochs={cfg.epochs}, eval_interval={cfg.eval_interval}, batch_size={min(cfg.global_batch_size, 1024)}")
+    print(f"[info] Training config | epochs={cfg.epochs}, eval_interval={cfg.eval_interval}, batch_size={min(cfg.global_batch_size, 512)}")
 
     # Early stopping
     best_val = math.inf
-    patience = 10
+    patience = 3
+    min_delta = 1e-2
     bad_epochs = 0
 
     # History tracking for plots and reports
@@ -377,7 +392,11 @@ def main():
         ep_start = time.time()
         metrics = train_one_epoch(model, train_loader, optimizer, scheduler, device)
         wandb.log({"epoch": epoch, **metrics})
-        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f}")
+        tr_acc = metrics.get('train/accuracy', None)
+        if tr_acc is not None:
+            print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f} train_acc={tr_acc:.4f}")
+        else:
+            print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f}")
         # Always save latest for resilience
         os.makedirs(cfg.checkpoint_path, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "latest.pt"))
@@ -397,7 +416,7 @@ def main():
             f14 = val_metrics.get('val/f1_4', float('nan'))
             print(f"[epoch {epoch}] val_loss={val_loss:.6f} acc={v_acc:.4f} macro_f1={v_f1m:.4f} | class0(P/R/F1)={p0:.3f}/{r0:.3f}/{f10:.3f} class4(P/R/F1)={p4:.3f}/{r4:.3f}/{f14:.3f}")
             # Early stopping
-            if val_metrics["val/loss"] + 1e-6 < best_val:
+            if (best_val - val_metrics["val/loss"]) > min_delta:
                 best_val = val_metrics["val/loss"]
                 bad_epochs = 0
                 # Save best

@@ -48,9 +48,9 @@ A minimal, production-ready training pipeline for hierarchical reasoning on fina
 
 ## Configuration
 - File: `config/cfg_pretrain.yaml`
-  - `global_batch_size`: default 1280
-  - `epochs`: default 150
-  - `eval_interval`: default 5
+  - `global_batch_size`: default 512
+  - `epochs`: default 100
+  - `eval_interval`: default 3
   - `lr`, `weight_decay`, warmup, etc.
 - Architecture: `config/arch/hrm_v1.yaml`
 

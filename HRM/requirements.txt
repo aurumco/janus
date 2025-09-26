@@ -9,3 +9,4 @@ pyarrow
 tensorboard
 pyyaml
 matplotlib
+sentry-sdk
