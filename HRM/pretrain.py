@@ -151,7 +151,8 @@ def main():
     cfg_path = os.path.join(os.path.dirname(__file__), "config", "cfg_pretrain.yaml")
     with open(cfg_path, "r") as f:
         raw = yaml.safe_load(f)
-    data_path = raw.get("data_path", "../Dataset/janus_m15_dataset.parquet")
+    # Allow overriding data path via environment (e.g., Kaggle)
+    data_path = os.environ.get("DATA_PATH", raw.get("data_path", "../Dataset/janus_m15_dataset.parquet"))
     arch = raw.get("defaults", [{"arch": "hrm_v1"}])[0]["arch"]
     arch_cfg_path = os.path.join(os.path.dirname(__file__), "config", "arch", f"{arch}.yaml")
     with open(arch_cfg_path, "r") as f:
@@ -182,6 +183,15 @@ def main():
         run_name="HRM_ACTV1",
     )
 
+    # If OUTPUT_DIR is set, redirect checkpoints there
+    output_dir = os.environ.get("OUTPUT_DIR")
+    if output_dir:
+        try:
+            os.makedirs(os.path.join(output_dir, "checkpoints", "janus_v4"), exist_ok=True)
+            cfg.checkpoint_path = os.path.join(output_dir, "checkpoints", "janus_v4")
+        except Exception:
+            pass
+
     # Robust device selection: prefer CUDA only if it can execute a simple kernel; otherwise fallback to CPU
     device = torch.device("cpu")
     if torch.cuda.is_available():
@@ -194,7 +204,8 @@ def main():
 
     # Prepare results directory (timestamped)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = os.path.join(os.path.dirname(__file__), "results", run_id)
+    results_base = os.environ.get("OUTPUT_DIR", os.path.dirname(__file__))
+    results_dir = os.path.join(results_base, "results", run_id)
     os.makedirs(results_dir, exist_ok=True)
     # Data
     train_loader, val_loader, test_loader, num_features = create_dataloaders(

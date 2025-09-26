@@ -59,10 +59,5 @@ A minimal, production-ready training pipeline for hierarchical reasoning on fina
 - Per-batch cleanup and (optional) `torch.cuda.empty_cache()` reduce peak memory.
 - DataLoader: tuned `num_workers` and `pin_memory` based on device.
 
-## Troubleshooting
-- Parquet read errors: verify `pyarrow` installed and `target` column present.
-- CUDA warnings/no kernels: training runs on CPU silently; install a CUDA-matched PyTorch build for GPU.
-- wandb login prompt: set `WANDB_SILENT=true` or login once; console remains minimal.
-
 ## License
 Proprietary. All rights reserved.
