@@ -11,7 +11,7 @@ hydra:
 data_path: ../Dataset/janus_m15_dataset.parquet
 
 # Hyperparams - Training
-global_batch_size: 1280
+global_batch_size: 512
 
 epochs: 150
 eval_interval: 5

@@ -33,7 +33,7 @@ class TrainConfig:
     data_path: str
     arch_name: str
     loss_name: str
-    global_batch_size: int = 1024
+    global_batch_size: int = 512
     epochs: int = 150
     eval_interval: int = 5
     lr: float = 3e-4
@@ -69,6 +69,11 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         optimizer.zero_grad(set_to_none=True)
         carry, loss, _, _, _ = model(carry=carry, batch=batch, return_keys=[])  # type: ignore
         loss.backward()
+        # Aggressive cleanup to avoid RAM spikes on Kaggle
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        else:
+            import gc; gc.collect()
         # XLA-aware optimizer step if running on TPU
         if device.type == "xla":
             try:
@@ -230,13 +235,13 @@ def main():
     results_dir = os.path.join(results_base, "results", run_id)
     os.makedirs(results_dir, exist_ok=True)
     # Data
-    # For XLA, pin_memory should be False; for CUDA, True
-    pin_mem = (hasattr(device, 'type') and device.type == 'cuda') if isinstance(device, torch.device) else False
+    # Kaggle-safe DataLoader settings: no workers, no pin_memory to avoid extra copies/forks
+    pin_mem = False
     train_loader, val_loader, test_loader, num_features = create_dataloaders(
         parquet_path=cfg.data_path,
         seq_len=INPUT_WINDOW_CANDLES,
-        batch_size=cfg.global_batch_size,
-        num_workers=max(2, (os.cpu_count() or 8) // 4),
+        batch_size=min(cfg.global_batch_size, 512),
+        num_workers=0,
         pin_memory=pin_mem,
     )
 
