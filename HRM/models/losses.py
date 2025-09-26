@@ -157,8 +157,8 @@ class ACTLossHead(nn.Module):
         total_loss = lm_loss + self.q_loss_weight * (q_halt_loss + q_continue_loss)
 
         if self.return_loss_only:
-            # DP-friendly: return only a tensor
-            return total_loss
+            # DP-friendly: return a 1D tensor so DataParallel gathers without scalar warning
+            return total_loss.view(1)
 
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
