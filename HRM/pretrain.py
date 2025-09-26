@@ -138,8 +138,10 @@ def _compute_metrics_from_conf(conf: torch.Tensor) -> Dict[str, float]:
 
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, float]:
-    model.eval()
-    _set_return_loss_only(model, False)
+    # Bypass DataParallel during evaluation to avoid gathering non-tensor structures
+    target_model: nn.Module = model.module if hasattr(model, "module") else model
+    target_model.eval()
+    _set_return_loss_only(target_model, False)
     total_loss = 0.0
     total_count = 0
     correct = 0
@@ -151,7 +153,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
             X = X.to(device)
             y = y.to(device)
             batch = build_batch(X, y)
-            out = model(batch=batch, return_keys=["logits"])  # type: ignore
+            out = target_model(batch=batch, return_keys=["logits"])  # type: ignore
             if isinstance(out, torch.Tensor):
                 # If DP-loss-only inadvertently set, skip metrics for this batch
                 loss = out.mean() if out.dim() > 0 else out
@@ -354,7 +356,8 @@ def main():
         ep_start = time.time()
         metrics = train_one_epoch(model, train_loader, optimizer, scheduler, device)
         wandb.log({"epoch": epoch, **metrics})
-        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f}")
+        cur_lr = optimizer.param_groups[0]["lr"]
+        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f} lr={cur_lr:.6e}")
         # Always save latest for resilience
         os.makedirs(cfg.checkpoint_path, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "latest.pt"))
@@ -362,7 +365,17 @@ def main():
         if epoch % cfg.eval_interval == 0:
             val_metrics = evaluate(model, val_loader, device)
             wandb.log({"epoch": epoch, **val_metrics})
-            print(f"[epoch {epoch}] val_loss={val_metrics.get('val/loss', float('nan')):.6f} acc={val_metrics.get('val/accuracy', float('nan')):.4f} macro_f1={val_metrics.get('val/macro_f1', float('nan')):.4f}")
+            # Detailed, tidy validation metrics
+            val_loss = val_metrics.get('val/loss', float('nan'))
+            v_acc = val_metrics.get('val/accuracy', float('nan'))
+            v_f1m = val_metrics.get('val/macro_f1', float('nan'))
+            p0 = val_metrics.get('val/prec_0', float('nan'))
+            r0 = val_metrics.get('val/rec_0', float('nan'))
+            f10 = val_metrics.get('val/f1_0', float('nan'))
+            p4 = val_metrics.get('val/prec_4', float('nan'))
+            r4 = val_metrics.get('val/rec_4', float('nan'))
+            f14 = val_metrics.get('val/f1_4', float('nan'))
+            print(f"[epoch {epoch}] val_loss={val_loss:.6f} acc={v_acc:.4f} macro_f1={v_f1m:.4f} | class0(P/R/F1)={p0:.3f}/{r0:.3f}/{f10:.3f} class4(P/R/F1)={p4:.3f}/{r4:.3f}/{f14:.3f}")
             # Early stopping
             if val_metrics["val/loss"] + 1e-6 < best_val:
                 best_val = val_metrics["val/loss"]
@@ -371,6 +384,7 @@ def main():
                 os.makedirs(cfg.checkpoint_path, exist_ok=True)
                 torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "best.pt"))
                 torch.save(model, os.path.join(cfg.checkpoint_path, "best_full.pth"))
+                print(f"[epoch {epoch}] New best model saved (val_loss={best_val:.6f})")
             else:
                 bad_epochs += 1
                 if bad_epochs >= patience:
