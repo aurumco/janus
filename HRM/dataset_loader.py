@@ -59,6 +59,7 @@ def create_dataloaders(
     batch_size: int = 512,
     num_workers: int = 4,
     pin_memory: bool = True,
+    augment_noise_std: float = 0.0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     """Create train/val/test dataloaders with chronological split.
     Train/Val: 2023-01-01 .. 2025-06-30 (90/10 split)
@@ -99,7 +100,19 @@ def create_dataloaders(
     # Infer num_features from dataset
     num_features = full_train_val.features.shape[1]
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    # Optional augmentation via collate_fn (train only)
+    collate_fn = None
+    if augment_noise_std and augment_noise_std > 0.0:
+        def _train_collate(batch):
+            Xs, ys = zip(*batch)
+            Xs = torch.stack(Xs, dim=0)
+            ys = torch.stack(ys, dim=0)
+            noise = torch.randn_like(Xs) * float(augment_noise_std)
+            Xs = Xs + noise
+            return Xs, ys
+        collate_fn = _train_collate
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory, collate_fn=collate_fn)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 

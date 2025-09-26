@@ -245,7 +245,7 @@ def main():
         arch_name=str(arch_cfg["name"]),
         loss_name=str(arch_cfg["loss"]["name"]),
         global_batch_size=_i(raw.get("global_batch_size", 512), 512),
-        epochs=_i(raw.get("epochs", 180), 180),
+        epochs=_i(raw.get("epochs", 100), 100),
         eval_interval=_i(raw.get("eval_interval", 3), 3),
         lr=_f(raw.get("lr", 3e-4), 3e-4),
         weight_decay=_f(raw.get("weight_decay", 1e-2), 1e-2),
@@ -301,6 +301,7 @@ def main():
         batch_size=min(cfg.global_batch_size, 512),
         num_workers=0,
         pin_memory=pin_mem,
+        augment_noise_std=0.0005,
     )
     try:
         print(f"[info] Data ready | features={num_features}, seq_len={INPUT_WINDOW_CANDLES}, train_batches={len(train_loader)}, val_batches={len(val_loader)}")
@@ -333,8 +334,8 @@ def main():
         base_model,
         loss_type="focal_loss",
         alpha=0.75,
-        gamma=1.5,
-        class_weights=[1.8, 1.3, 0.4, 1.3, 1.8],
+        gamma=1.0,
+        class_weights=[2.0, 1.5, 0.3, 1.5, 2.0],
         q_loss_weight=0.1,
     )
     model = model.to(device)
@@ -346,9 +347,9 @@ def main():
 
     # Optimizer and scheduler
     optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    # Warmup (10% of total steps) + cosine to lr_min_ratio
+    # Warmup (fixed 5 epochs) + cosine to lr_min_ratio
     total_steps = max(1, cfg.epochs * len(train_loader))
-    warmup_steps = int(0.1 * total_steps) if int(os.environ.get("LR_WARMUP_STEPS", "0")) == 0 else int(os.environ["LR_WARMUP_STEPS"])  # allow override via env
+    warmup_steps = int(5 * len(train_loader)) if int(os.environ.get("LR_WARMUP_STEPS", "0")) == 0 else int(os.environ["LR_WARMUP_STEPS"])  # allow override via env
     warmup_steps = max(1, warmup_steps)
     min_lr = cfg.lr * cfg.lr_min_ratio
     import math as _math
@@ -371,8 +372,8 @@ def main():
 
     # Early stopping
     best_val = math.inf
-    patience = 3
-    min_delta = 1e-2
+    patience = 2
+    min_delta = 5e-3
     bad_epochs = 0
 
     # History tracking for plots and reports
