@@ -27,7 +27,7 @@ def ensure_code_available() -> str:
     # Else, clone into /kaggle/working/janus
     os.makedirs("/kaggle/working", exist_ok=True)
     if not os.path.isdir(WORK_ROOT):
-        print("[setup] Cloning repository... (ensure Internet is enabled)")
+        print("[setup] Cloning repository...")
         try:
             subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_BRANCH, REPO_URL, WORK_ROOT], check=True)
         except Exception as e:

@@ -78,7 +78,8 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         optimizer.zero_grad(set_to_none=True)
         out = model(batch=batch, return_keys=[])  # type: ignore
         if isinstance(out, torch.Tensor):
-            loss = out
+            # In DataParallel, each replica returns a scalar; gather makes a 1D tensor.
+            loss = out.mean() if out.dim() > 0 else out
         else:
             # Fallback if model returns tuple
             _, loss, _, _, _ = out  # type: ignore
@@ -153,7 +154,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
             out = model(batch=batch, return_keys=["logits"])  # type: ignore
             if isinstance(out, torch.Tensor):
                 # If DP-loss-only inadvertently set, skip metrics for this batch
-                loss = out
+                loss = out.mean() if out.dim() > 0 else out
                 outputs = {}
             else:
                 carry, loss, metrics, outputs, _ = out  # type: ignore
