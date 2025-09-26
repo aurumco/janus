@@ -80,17 +80,27 @@ class ACTLossHead(nn.Module):
         labels = new_carry.current_data["labels"]
         # Ensure labels shape is [B] (last-timestep label per sequence)
         if labels.ndim == 2:
-            # Labels provided as [B, Seq] with ignore everywhere except last
             labels = labels[:, -1]
         elif labels.ndim > 2:
-            labels = labels.view(labels.shape[0], -1)[:, -1]
+            labels = labels.reshape(labels.shape[0], -1)[:, -1]
+        else:
+            labels = labels.view(-1)
 
         # Correctness
         with torch.no_grad():
-            logits_last = outputs["logits"]  # [B, C]
-            preds = torch.argmax(logits_last, dim=-1)
-            valid = labels != IGNORE_LABEL_ID
-            acc = (preds[valid] == labels[valid]).float().mean() if valid.any() else torch.tensor(0.0)
+            logits_last = outputs["logits"]  # [B, C] or [C]
+            if logits_last.ndim == 1:
+                logits_last = logits_last.unsqueeze(0)
+            preds = torch.argmax(logits_last, dim=-1).view(-1)
+            labels = labels.view(-1)
+            # Align lengths defensively
+            n = min(preds.numel(), labels.numel())
+            preds = preds[:n]
+            labels = labels[:n]
+            valid = (labels != IGNORE_LABEL_ID).view(-1)
+            if valid.numel() != n:
+                valid = torch.ones((n,), dtype=torch.bool, device=labels.device)
+            acc = (preds[valid] == labels[valid]).float().mean() if valid.any() else torch.tensor(0.0, device=labels.device)
             metrics = {
                 "count": valid.sum(),
                 "accuracy": acc * valid.sum(),  # scaled for later reduction
@@ -99,7 +109,9 @@ class ACTLossHead(nn.Module):
             }
 
         # Losses (last-timestep classification)
-        logits_last = outputs["logits"]  # [B, C]
+        logits_last = outputs["logits"]  # [B, C] or [C]
+        if logits_last.ndim == 1:
+            logits_last = logits_last.unsqueeze(0)
         weight = None
         if self.class_weights is not None:
             weight = self.class_weights.to(logits_last.device)
