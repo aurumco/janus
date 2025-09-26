@@ -32,8 +32,8 @@ class TrainConfig:
     data_path: str
     arch_name: str
     loss_name: str
-    global_batch_size: int = 512
-    epochs: int = 150
+    global_batch_size: int = 1024
+    epochs: int = 180
     eval_interval: int = 5
     lr: float = 3e-4
     weight_decay: float = 1e-2
@@ -70,8 +70,13 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
     _set_return_loss_only(model, True)
     total_loss = 0.0
     total_count = 0
+    # Light-weight train accuracy estimation: sample every k-th batch
+    sample_every = 10
+    acc_correct = 0
+    acc_total = 0
+    target_model: nn.Module = model.module if hasattr(model, "module") else model
 
-    for X, y in loader:
+    for step, (X, y) in enumerate(loader, start=1):
         X = X.to(device)
         y = y.to(device)
         batch = build_batch(X, y)
@@ -103,13 +108,29 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
             scheduler.step()
         total_loss += float(loss.detach().item())
         total_count += 1
+        # Periodically estimate accuracy on this batch (no DP, no grad)
+        if (step % sample_every) == 0:
+            with torch.inference_mode():
+                target_model.eval()
+                eval_out = target_model(batch=batch, return_keys=["logits"])  # type: ignore
+                if not isinstance(eval_out, torch.Tensor):
+                    _, _, _, eval_outputs, _ = eval_out  # type: ignore
+                    if "logits" in eval_outputs:
+                        logits = eval_outputs["logits"]
+                        preds = torch.argmax(logits, dim=-1)
+                        acc_correct += int((preds == y).sum().item())
+                        acc_total += int(y.numel())
+                target_model.train()
         # Free per-batch tensors
         del X, y, batch, loss
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     import gc; gc.collect()
 
-    return {"train/loss": total_loss / max(1, total_count)}
+    metrics = {"train/loss": total_loss / max(1, total_count)}
+    if acc_total > 0:
+        metrics["train/accuracy"] = acc_correct / max(1, acc_total)
+    return metrics
 
 
 def _compute_metrics_from_conf(conf: torch.Tensor) -> Dict[str, float]:
@@ -195,33 +216,6 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
     return base
 
 
-def quick_train_accuracy(model: nn.Module, loader: DataLoader, device: torch.device, max_batches: int = 2) -> float:
-    """Compute a quick training accuracy estimate over a few batches, bypassing DP for metrics."""
-    target_model: nn.Module = model.module if hasattr(model, "module") else model
-    target_model.eval()
-    total, correct = 0, 0
-    with torch.inference_mode():
-        for i, (X, y) in enumerate(loader):
-            if i >= max_batches:
-                break
-            X = X.to(device)
-            y = y.to(device)
-            batch = build_batch(X, y)
-            out = target_model(batch=batch, return_keys=["logits"])  # type: ignore
-            if isinstance(out, torch.Tensor):
-                # No logits available in loss-only mode
-                continue
-            else:
-                _, _, _, outputs, _ = out  # type: ignore
-            logits = outputs.get("logits")
-            if logits is None:
-                continue
-            preds = torch.argmax(logits, dim=-1)
-            correct += int((preds == y).sum().item())
-            total += int(y.numel())
-    target_model.train()
-    return (correct / max(1, total)) if total > 0 else float('nan')
-
 def main():
     # Load YAML config for arch and training
     cfg_path = os.path.join(os.path.dirname(__file__), "config", "cfg_pretrain.yaml")
@@ -251,7 +245,7 @@ def main():
         arch_name=str(arch_cfg["name"]),
         loss_name=str(arch_cfg["loss"]["name"]),
         global_batch_size=_i(raw.get("global_batch_size", 1024), 1024),
-        epochs=_i(raw.get("epochs", 150), 150),
+        epochs=_i(raw.get("epochs", 180), 180),
         eval_interval=_i(raw.get("eval_interval", 5), 5),
         lr=_f(raw.get("lr", 3e-4), 3e-4),
         weight_decay=_f(raw.get("weight_decay", 1e-2), 1e-2),
@@ -359,7 +353,7 @@ def main():
     wandb.init(project=cfg.project_name, name=cfg.run_name, settings=wandb.Settings(_disable_stats=True))
     wandb.config.update({"seq_len": INPUT_WINDOW_CANDLES, "num_features": num_features})
     wandb.watch(model, log="all", log_freq=100)
-    print(f"[info] Training config | epochs={cfg.epochs}, eval_interval={cfg.eval_interval}, batch_size={min(cfg.global_batch_size, 512)}, lr={cfg.lr}")
+    print(f"[info] Training config | epochs={cfg.epochs}, eval_interval={cfg.eval_interval}, batch_size={min(cfg.global_batch_size, 1024)}")
 
     # Early stopping
     best_val = math.inf
@@ -383,8 +377,7 @@ def main():
         ep_start = time.time()
         metrics = train_one_epoch(model, train_loader, optimizer, scheduler, device)
         wandb.log({"epoch": epoch, **metrics})
-        train_acc_est = quick_train_accuracy(model, train_loader, device, max_batches=2)
-        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f} train_acc_est={train_acc_est:.4f}")
+        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f}")
         # Always save latest for resilience
         os.makedirs(cfg.checkpoint_path, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "latest.pt"))
@@ -409,7 +402,16 @@ def main():
                 bad_epochs = 0
                 # Save best
                 os.makedirs(cfg.checkpoint_path, exist_ok=True)
-                torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "best.pt"))
+                # Safe checkpoints (no pickling of model object)
+                target_model = model.module if hasattr(model, "module") else model
+                torch.save(target_model.state_dict(), os.path.join(cfg.checkpoint_path, "best.pt"))
+                checkpoint = {
+                    "epoch": epoch,
+                    "model_state": target_model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(cfg.checkpoint_path, "best_checkpoint.pth"))
                 print(f"[epoch {epoch}] New best model saved (val_loss={best_val:.6f})")
             else:
                 bad_epochs += 1
@@ -505,9 +507,7 @@ def main():
             _, _, _, outputs, _ = self.mdl(carry=carry, batch=batch, return_keys=["logits"])  # type: ignore
             return outputs["logits"]  # [B, C]
 
-    # Use underlying module for export if DataParallel is active
-    export_model = model.module if hasattr(model, "module") else model
-    iw = InferenceWrapper(export_model).to(device).eval()
+    iw = InferenceWrapper(model).to(device).eval()
     dummy = torch.zeros((1, INPUT_WINDOW_CANDLES, num_features), dtype=torch.float32, device=device)
     # TorchScript
     try:
