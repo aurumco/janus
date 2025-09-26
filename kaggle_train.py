@@ -5,9 +5,17 @@ import sys
 import subprocess
 
 REPO_URL = os.environ.get("REPO_URL", "https://github.com/aurumco/janus.git")
+REPO_BRANCH = os.environ.get("REPO_BRANCH", "main")
 
 # Preferred working root on Kaggle
-ROOT = os.path.dirname(os.path.abspath(__file__))
+def _get_root() -> str:
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        # Running inside a Kaggle notebook cell (no __file__)
+        return os.getcwd()
+
+ROOT = _get_root()
 WORK_ROOT = "/kaggle/working/janus"
 
 def ensure_code_available() -> str:
@@ -21,10 +29,18 @@ def ensure_code_available() -> str:
     if not os.path.isdir(WORK_ROOT):
         print("[setup] Cloning repository... (ensure Internet is enabled)")
         try:
-            subprocess.run(["git", "clone", "--depth", "1", REPO_URL, WORK_ROOT], check=True)
+            subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_BRANCH, REPO_URL, WORK_ROOT], check=True)
         except Exception as e:
             print("[error] Git clone failed. In Kaggle, enable Internet (Settings > Internet) and retry.")
             raise
+    else:
+        # Update to latest commit
+        try:
+            print("[setup] Updating repository to latest", REPO_BRANCH)
+            subprocess.run(["git", "-C", WORK_ROOT, "fetch", "--all", "--quiet"], check=True)
+            subprocess.run(["git", "-C", WORK_ROOT, "reset", "--hard", f"origin/{REPO_BRANCH}"], check=True)
+        except Exception as e:
+            print(f"[warn] Repo update failed: {e}. Continuing with existing files.")
     return WORK_ROOT
 
 repo_root = ensure_code_available()

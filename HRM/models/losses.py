@@ -78,8 +78,12 @@ class ACTLossHead(nn.Module):
         # B x SeqLen x D
         new_carry, outputs = self.model(**model_kwargs)
         labels = new_carry.current_data["labels"]
-        if labels.ndim > 1:
-            labels = labels.squeeze(-1)
+        # Ensure labels shape is [B] (last-timestep label per sequence)
+        if labels.ndim == 2:
+            # Labels provided as [B, Seq] with ignore everywhere except last
+            labels = labels[:, -1]
+        elif labels.ndim > 2:
+            labels = labels.view(labels.shape[0], -1)[:, -1]
 
         # Correctness
         with torch.no_grad():

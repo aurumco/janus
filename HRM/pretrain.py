@@ -69,7 +69,16 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         optimizer.zero_grad(set_to_none=True)
         carry, loss, _, _, _ = model(carry=carry, batch=batch, return_keys=[])  # type: ignore
         loss.backward()
-        optimizer.step()
+        # XLA-aware optimizer step if running on TPU
+        if device.type == "xla":
+            try:
+                import torch_xla.core.xla_model as xm
+                xm.optimizer_step(optimizer, barrier=True)
+                xm.mark_step()
+            except Exception:
+                optimizer.step()
+        else:
+            optimizer.step()
         if scheduler is not None:
             scheduler.step()
         total_loss += float(loss.detach().item())
@@ -139,6 +148,12 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
             del X, y, batch, carry, outputs, logits, preds
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if device.type == "xla":
+                try:
+                    import torch_xla.core.xla_model as xm
+                    xm.mark_step()
+                except Exception:
+                    pass
     import gc; gc.collect()
     base = {"val/loss": total_loss / max(1, total_count)}
     if conf.sum().item() > 0:
@@ -192,15 +207,22 @@ def main():
         except Exception:
             pass
 
-    # Robust device selection: prefer CUDA only if it can execute a simple kernel; otherwise fallback to CPU
-    device = torch.device("cpu")
-    if torch.cuda.is_available():
-        try:
-            _t = torch.randn(1, device="cuda")
-            _t = _t * 1.0  # trigger a trivial kernel
+    # Device selection: prefer TPU (XLA), else GPU. Abort if neither is available.
+    device = None
+    # Try TPU (XLA)
+    try:
+        import torch_xla.core.xla_model as xm  # type: ignore
+        device = xm.xla_device()
+        # Tag device.type for downstream checks
+        device.type = "xla"  # type: ignore
+    except Exception:
+        device = None
+    # Else try CUDA
+    if device is None:
+        if torch.cuda.is_available():
             device = torch.device("cuda")
-        except Exception:
-            device = torch.device("cpu")
+        else:
+            raise RuntimeError("No TPU or GPU detected. Please enable TPU or GPU in your environment.")
 
     # Prepare results directory (timestamped)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -208,12 +230,14 @@ def main():
     results_dir = os.path.join(results_base, "results", run_id)
     os.makedirs(results_dir, exist_ok=True)
     # Data
+    # For XLA, pin_memory should be False; for CUDA, True
+    pin_mem = (hasattr(device, 'type') and device.type == 'cuda') if isinstance(device, torch.device) else False
     train_loader, val_loader, test_loader, num_features = create_dataloaders(
         parquet_path=cfg.data_path,
         seq_len=INPUT_WINDOW_CANDLES,
         batch_size=cfg.global_batch_size,
         num_workers=max(2, (os.cpu_count() or 8) // 4),
-        pin_memory=(device.type == "cuda"),
+        pin_memory=pin_mem,
     )
 
     # Model init
