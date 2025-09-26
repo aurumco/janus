@@ -163,4 +163,6 @@ class ACTLossHead(nn.Module):
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
-        return new_carry, total_loss, metrics, detached_outputs, new_carry.halted.all()
+        # Return a 1D loss tensor and a 1D halted flag to keep DataParallel gather consistent
+        halted_flag = new_carry.halted.all().view(1)
+        return new_carry, total_loss.view(1), metrics, detached_outputs, halted_flag
