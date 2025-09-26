@@ -31,27 +31,39 @@ def stablemax_cross_entropy(logits, labels, ignore_index: int = -100):
     return -torch.where(valid_mask, prediction_logprobs, 0)
 
 
-def softmax_cross_entropy(logits, labels, ignore_index: int = -100):
-    # Cast logits to f32
-    # Flatten logits
-    return F.cross_entropy(logits.to(torch.float32).view(-1, logits.shape[-1]), labels.to(torch.long).view(-1), ignore_index=ignore_index, reduction="none").view(labels.shape)
+def softmax_cross_entropy(logits, labels, ignore_index: int = -100, weight: torch.Tensor | None = None):
+    # logits: [..., C], labels: [...]
+    return F.cross_entropy(
+        logits.to(torch.float32).view(-1, logits.shape[-1]),
+        labels.to(torch.long).view(-1),
+        ignore_index=ignore_index,
+        reduction="none",
+        weight=weight,
+    ).view(labels.shape)
 
 
-def focal_loss(logits: torch.Tensor, labels: torch.Tensor, ignore_index: int = -100, alpha: float = 0.25, gamma: float = 2.0):
-    """Multi-class Focal Loss (per-element, no reduction) compatible with ACTLossHead.
+def focal_loss(logits: torch.Tensor, labels: torch.Tensor, ignore_index: int = -100, alpha: float = 0.25, gamma: float = 2.0, class_weights: torch.Tensor | None = None):
+    """Multi-class Focal Loss (per-element, no reduction).
     - logits: [..., C]
     - labels: [...]
+    - class_weights: optional tensor of shape [C]
     """
-    ce = softmax_cross_entropy(logits, labels, ignore_index=ignore_index)
+    ce = softmax_cross_entropy(logits, labels, ignore_index=ignore_index, weight=class_weights)
     pt = torch.exp(-ce)
     return alpha * (1.0 - pt) ** gamma * ce
 
 
 class ACTLossHead(nn.Module):
-    def __init__(self, model: nn.Module, loss_type: str):
+    def __init__(self, model: nn.Module, loss_type: str, alpha: float = 0.25, gamma: float = 2.0, class_weights: Sequence[float] | None = None, q_loss_weight: float = 0.1):
         super().__init__()
         self.model = model
-        self.loss_fn = globals()[loss_type]
+        self.loss_type = loss_type
+        self.alpha = alpha
+        self.gamma = gamma
+        self.class_weights = None
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float32)
+        self.q_loss_weight = q_loss_weight
         
     def initial_carry(self, *args, **kwargs):
         return self.model.initial_carry(*args, **kwargs)  # type: ignore
@@ -66,36 +78,40 @@ class ACTLossHead(nn.Module):
         # B x SeqLen x D
         new_carry, outputs = self.model(**model_kwargs)
         labels = new_carry.current_data["labels"]
+        if labels.ndim > 1:
+            labels = labels.squeeze(-1)
 
         # Correctness
         with torch.no_grad():
-            mask = labels != IGNORE_LABEL_ID
-            loss_counts = mask.sum(-1)
-            loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1)  # Avoid NaNs in division
-
-            is_correct = mask & (torch.argmax(outputs["logits"], dim=-1) == labels)
-            seq_is_correct = is_correct.sum(-1) == loss_counts
-            
-            # Metrics (halted)
-            valid_metrics = new_carry.halted & (loss_counts > 0)
+            logits_last = outputs["logits"]  # [B, C]
+            preds = torch.argmax(logits_last, dim=-1)
+            valid = labels != IGNORE_LABEL_ID
+            acc = (preds[valid] == labels[valid]).float().mean() if valid.any() else torch.tensor(0.0)
             metrics = {
-                "count": valid_metrics.sum(),
-                
-                "accuracy":       torch.where(valid_metrics, (is_correct.to(torch.float32) / loss_divisor).sum(-1), 0).sum(),
-                "exact_accuracy": (valid_metrics & seq_is_correct).sum(),
-
-                "q_halt_accuracy": (valid_metrics & ((outputs["q_halt_logits"] >= 0) == seq_is_correct)).sum(),
-                "steps":          torch.where(valid_metrics, new_carry.steps, 0).sum(),
+                "count": valid.sum(),
+                "accuracy": acc * valid.sum(),  # scaled for later reduction
+                "exact_accuracy": (preds[valid] == labels[valid]).sum(),
+                "steps": new_carry.steps.sum(),
             }
 
-        # Losses
-        # FIXME: Assuming the batch is always full
-        lm_loss = (self.loss_fn(outputs["logits"], labels, ignore_index=IGNORE_LABEL_ID) / loss_divisor).sum()
-        q_halt_loss = F.binary_cross_entropy_with_logits(outputs["q_halt_logits"], seq_is_correct.to(outputs["q_halt_logits"].dtype), reduction="sum")
+        # Losses (last-timestep classification)
+        logits_last = outputs["logits"]  # [B, C]
+        weight = None
+        if self.class_weights is not None:
+            weight = self.class_weights.to(logits_last.device)
+        if self.loss_type == "focal_loss":
+            per_example = focal_loss(logits_last, labels, ignore_index=IGNORE_LABEL_ID, alpha=self.alpha, gamma=self.gamma, class_weights=weight)
+        else:
+            per_example = softmax_cross_entropy(logits_last, labels, ignore_index=IGNORE_LABEL_ID, weight=weight)
+        lm_loss = per_example.sum()
+        # Halting auxiliary loss (down-weighted)
+        # Use correct/incorrect as target
+        target_is_correct = (torch.argmax(logits_last.detach(), dim=-1) == labels).to(outputs["q_halt_logits"].dtype)
+        q_halt_loss = F.binary_cross_entropy_with_logits(outputs["q_halt_logits"], target_is_correct, reduction="sum")
 
         metrics.update({
             "lm_loss": lm_loss.detach(),
-            "q_halt_loss": q_halt_loss.detach(),
+            "q_halt_loss": (self.q_loss_weight * q_halt_loss).detach(),
         })
 
         # Q continue (bootstrapping target loss)
@@ -108,4 +124,4 @@ class ACTLossHead(nn.Module):
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
-        return new_carry, lm_loss + 0.5 * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
+        return new_carry, lm_loss + self.q_loss_weight * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()

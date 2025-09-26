@@ -106,12 +106,10 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         self.embed_scale  = math.sqrt(self.config.hidden_size)
         embed_init_std = 1.0 / self.embed_scale
 
-        # Numerical feature embedding instead of token/puzzle embeddings
+        # Numerical feature embedding
         self.feature_embed = CastedLinear(self.config.num_features, self.config.hidden_size, bias=True)
         self.lm_head      = CastedLinear(self.config.hidden_size, 5, bias=False)
         self.q_head       = CastedLinear(self.config.hidden_size, 2, bias=True)
-
-        # No puzzle embeddings in Janus time-series setup
 
         # LM Blocks
         if self.config.pos_encodings == "rope":
@@ -142,13 +140,19 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         embedding = self.feature_embed(input.to(self.forward_dtype))
         # Position embeddings
         if self.config.pos_encodings == "learned":
-            embedding = 0.707106781 * (embedding + self.embed_pos.embedding_weight.to(self.forward_dtype))
+            bsz, seqlen = input.shape[0], self.config.seq_len
+            pos_idx = torch.arange(seqlen, device=input.device).unsqueeze(0).expand(bsz, seqlen)
+            pos_emb = self.embed_pos(pos_idx.to(torch.int64))
+            embedding = 0.707106781 * (embedding + pos_emb.to(self.forward_dtype))
         return self.embed_scale * embedding
 
     def empty_carry(self, batch_size: int):
+        seqlen = self.config.seq_len
+        H_template = self.H_init[None, None, :].to(self.forward_dtype).to(self.H_init.device).expand(batch_size, seqlen, -1).clone()
+        L_template = self.L_init[None, None, :].to(self.forward_dtype).to(self.L_init.device).expand(batch_size, seqlen, -1).clone()
         return HierarchicalReasoningModel_ACTV1InnerCarry(
-            z_H=torch.empty(batch_size, self.config.seq_len, self.config.hidden_size, dtype=self.forward_dtype, device=self.H_init.device),
-            z_L=torch.empty(batch_size, self.config.seq_len, self.config.hidden_size, dtype=self.forward_dtype, device=self.H_init.device),
+            z_H=H_template,
+            z_L=L_template,
         )
         
     def reset_carry(self, reset_flag: torch.Tensor, carry: HierarchicalReasoningModel_ACTV1InnerCarry):
@@ -185,9 +189,8 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
         # LM Outputs
         new_carry = HierarchicalReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
-        # Per-timestep logits then select last timestep for classification
-        logits_all = self.lm_head(z_H)
-        output = logits_all  # keep full for compatibility
+        # Classification logits for last timestep only: [B, C]
+        output = self.lm_head(z_H[:, -1, :])
 
         # Q head
         q_logits = self.q_head(z_H[:, -1]).to(torch.float32)
@@ -202,8 +205,6 @@ class HierarchicalReasoningModel_ACTV1(nn.Module):
         super().__init__()
         self.config = HierarchicalReasoningModel_ACTV1Config(**config_dict)
         self.inner = HierarchicalReasoningModel_ACTV1_Inner(self.config)
-
-    # No puzzle embeddings in Janus version
 
     def initial_carry(self, batch: Dict[str, torch.Tensor]):
         batch_size = batch["inputs"].shape[0]
