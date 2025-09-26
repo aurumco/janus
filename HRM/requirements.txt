@@ -1,0 +1,12 @@
+torch
+tqdm
+pydantic
+wandb
+omegaconf
+hydra-core
+huggingface_hub
+pandas
+pyarrow
+tensorboard
+pyyaml
+matplotlib
