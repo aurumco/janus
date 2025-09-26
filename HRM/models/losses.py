@@ -64,6 +64,8 @@ class ACTLossHead(nn.Module):
         if class_weights is not None:
             self.class_weights = torch.tensor(class_weights, dtype=torch.float32)
         self.q_loss_weight = q_loss_weight
+        # When training with DataParallel, returning only a scalar tensor loss avoids gather issues
+        self.return_loss_only: bool = False
         
     def initial_carry(self, *args, **kwargs):
         return self.model.initial_carry(*args, **kwargs)  # type: ignore
@@ -74,6 +76,13 @@ class ACTLossHead(nn.Module):
         # Model args
         **model_kwargs,
     ) -> Tuple[Any, torch.Tensor, Dict[str, torch.Tensor], Optional[Dict[str, torch.Tensor]], torch.Tensor]:
+        # Ensure carry is created per-replica when using DataParallel
+        if "batch" in model_kwargs and "carry" not in model_kwargs:
+            try:
+                model_kwargs["carry"] = self.model.initial_carry(model_kwargs["batch"])  # type: ignore
+            except Exception:
+                # Fallback: rely on model to handle missing carry if supported
+                pass
         # Model logits
         # B x SeqLen x D
         new_carry, outputs = self.model(**model_kwargs)
@@ -145,7 +154,13 @@ class ACTLossHead(nn.Module):
 
             metrics["q_continue_loss"] = q_continue_loss.detach()
 
+        total_loss = lm_loss + self.q_loss_weight * (q_halt_loss + q_continue_loss)
+
+        if self.return_loss_only:
+            # DP-friendly: return only a tensor
+            return total_loss
+
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
-        return new_carry, lm_loss + self.q_loss_weight * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
+        return new_carry, total_loss, metrics, detached_outputs, new_carry.halted.all()

@@ -55,8 +55,19 @@ def build_batch(batch_inputs: torch.Tensor, batch_labels: torch.Tensor) -> Dict[
     }
 
 
+def _set_return_loss_only(m: nn.Module, flag: bool):
+    # Toggle ACTLossHead.return_loss_only if present (supports DataParallel)
+    try:
+        target = m.module if hasattr(m, "module") else m
+        if hasattr(target, "return_loss_only"):
+            target.return_loss_only = flag  # type: ignore
+    except Exception:
+        pass
+
+
 def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, scheduler: CosineAnnealingLR, device: torch.device) -> Dict[str, float]:
     model.train()
+    _set_return_loss_only(model, True)
     total_loss = 0.0
     total_count = 0
 
@@ -64,9 +75,13 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         X = X.to(device)
         y = y.to(device)
         batch = build_batch(X, y)
-        carry = model.initial_carry(batch)  # type: ignore
         optimizer.zero_grad(set_to_none=True)
-        carry, loss, _, _, _ = model(carry=carry, batch=batch, return_keys=[])  # type: ignore
+        out = model(batch=batch, return_keys=[])  # type: ignore
+        if isinstance(out, torch.Tensor):
+            loss = out
+        else:
+            # Fallback if model returns tuple
+            _, loss, _, _, _ = out  # type: ignore
         loss.backward()
         # Aggressive cleanup to avoid RAM spikes on Kaggle
         if torch.cuda.is_available():
@@ -88,7 +103,7 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         total_loss += float(loss.detach().item())
         total_count += 1
         # Free per-batch tensors
-        del X, y, batch, carry, loss
+        del X, y, batch, loss
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     import gc; gc.collect()
@@ -123,6 +138,7 @@ def _compute_metrics_from_conf(conf: torch.Tensor) -> Dict[str, float]:
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, float]:
     model.eval()
+    _set_return_loss_only(model, False)
     total_loss = 0.0
     total_count = 0
     correct = 0
@@ -134,12 +150,20 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
             X = X.to(device)
             y = y.to(device)
             batch = build_batch(X, y)
-            carry = model.initial_carry(batch)  # type: ignore
-            carry, loss, metrics, outputs, _ = model(carry=carry, batch=batch, return_keys=["logits"])  # type: ignore
+            out = model(batch=batch, return_keys=["logits"])  # type: ignore
+            if isinstance(out, torch.Tensor):
+                # If DP-loss-only inadvertently set, skip metrics for this batch
+                loss = out
+                outputs = {}
+            else:
+                carry, loss, metrics, outputs, _ = out  # type: ignore
             total_loss += loss.detach().item()
             total_count += 1
-            logits = outputs["logits"]  # [B, C]
-            preds = torch.argmax(logits, dim=-1)
+            if "logits" in outputs:
+                logits = outputs["logits"]  # [B, C]
+                preds = torch.argmax(logits, dim=-1)
+            else:
+                preds = torch.empty_like(y)
             # Update confusion matrix on CPU to keep memory low
             yt = y.detach().cpu().to(torch.long)
             pt = preds.detach().cpu().to(torch.long)
@@ -149,7 +173,10 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
             correct += int((preds == y).sum().item())
             total += int(y.numel())
             # Free per-batch tensors
-            del X, y, batch, carry, outputs, logits, preds
+            try:
+                del X, y, batch, outputs, logits, preds
+            except Exception:
+                pass
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if device.type == "xla":
@@ -234,6 +261,7 @@ def main():
             device = torch.device("cuda")
         else:
             raise RuntimeError("No TPU or GPU detected. Please enable TPU or GPU in your environment.")
+    print(f"[info] Using device: {getattr(device, 'type', str(device))}")
 
     # Prepare results directory (timestamped)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -250,6 +278,10 @@ def main():
         num_workers=0,
         pin_memory=pin_mem,
     )
+    try:
+        print(f"[info] Data ready | features={num_features}, seq_len={INPUT_WINDOW_CANDLES}, train_batches={len(train_loader)}, val_batches={len(val_loader)}")
+    except Exception:
+        pass
 
     # Model init
     model_cls = load_model_class(cfg.arch_name)
@@ -283,6 +315,11 @@ def main():
     )
     model = model.to(device)
 
+    # Multi-GPU support via DataParallel
+    if hasattr(torch.cuda, "device_count") and torch.cuda.device_count() > 1:
+        print(f"[info] Using DataParallel on {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+
     # Optimizer and scheduler
     optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     T_max = max(1, (cfg.epochs // cfg.eval_interval) * len(train_loader))
@@ -292,6 +329,7 @@ def main():
     wandb.init(project=cfg.project_name, name=cfg.run_name, settings=wandb.Settings(_disable_stats=True))
     wandb.config.update({"seq_len": INPUT_WINDOW_CANDLES, "num_features": num_features})
     wandb.watch(model, log="all", log_freq=100)
+    print(f"[info] Training config | epochs={cfg.epochs}, eval_interval={cfg.eval_interval}, batch_size={min(cfg.global_batch_size, 512)}, lr={cfg.lr}")
 
     # Early stopping
     best_val = math.inf
@@ -315,6 +353,7 @@ def main():
         ep_start = time.time()
         metrics = train_one_epoch(model, train_loader, optimizer, scheduler, device)
         wandb.log({"epoch": epoch, **metrics})
+        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f}")
         # Always save latest for resilience
         os.makedirs(cfg.checkpoint_path, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "latest.pt"))
@@ -322,6 +361,7 @@ def main():
         if epoch % cfg.eval_interval == 0:
             val_metrics = evaluate(model, val_loader, device)
             wandb.log({"epoch": epoch, **val_metrics})
+            print(f"[epoch {epoch}] val_loss={val_metrics.get('val/loss', float('nan')):.6f} acc={val_metrics.get('val/accuracy', float('nan')):.4f} macro_f1={val_metrics.get('val/macro_f1', float('nan')):.4f}")
             # Early stopping
             if val_metrics["val/loss"] + 1e-6 < best_val:
                 best_val = val_metrics["val/loss"]
