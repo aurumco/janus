@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 import yaml
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple
+from typing import Dict
 
 import torch
 from torch import nn
@@ -48,7 +48,7 @@ class TrainConfig:
 def build_batch(batch_inputs: torch.Tensor, batch_labels: torch.Tensor) -> Dict[str, torch.Tensor]:
     # inputs: [B, Seq, F], labels: [B]
     B, S, _ = batch_inputs.shape
-    labels_seq = torch.full((B, S), IGNORE_LABEL_ID, dtype=torch.long)
+    labels_seq = torch.full((B, S), IGNORE_LABEL_ID, dtype=torch.long, device=batch_inputs.device)
     labels_seq[:, -1] = batch_labels
     return {
         "inputs": batch_inputs,
