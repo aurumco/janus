@@ -195,6 +195,33 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
     return base
 
 
+def quick_train_accuracy(model: nn.Module, loader: DataLoader, device: torch.device, max_batches: int = 2) -> float:
+    """Compute a quick training accuracy estimate over a few batches, bypassing DP for metrics."""
+    target_model: nn.Module = model.module if hasattr(model, "module") else model
+    target_model.eval()
+    total, correct = 0, 0
+    with torch.inference_mode():
+        for i, (X, y) in enumerate(loader):
+            if i >= max_batches:
+                break
+            X = X.to(device)
+            y = y.to(device)
+            batch = build_batch(X, y)
+            out = target_model(batch=batch, return_keys=["logits"])  # type: ignore
+            if isinstance(out, torch.Tensor):
+                # No logits available in loss-only mode
+                continue
+            else:
+                _, _, _, outputs, _ = out  # type: ignore
+            logits = outputs.get("logits")
+            if logits is None:
+                continue
+            preds = torch.argmax(logits, dim=-1)
+            correct += int((preds == y).sum().item())
+            total += int(y.numel())
+    target_model.train()
+    return (correct / max(1, total)) if total > 0 else float('nan')
+
 def main():
     # Load YAML config for arch and training
     cfg_path = os.path.join(os.path.dirname(__file__), "config", "cfg_pretrain.yaml")
@@ -356,8 +383,8 @@ def main():
         ep_start = time.time()
         metrics = train_one_epoch(model, train_loader, optimizer, scheduler, device)
         wandb.log({"epoch": epoch, **metrics})
-        cur_lr = optimizer.param_groups[0]["lr"]
-        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f} lr={cur_lr:.6e}")
+        train_acc_est = quick_train_accuracy(model, train_loader, device, max_batches=2)
+        print(f"[epoch {epoch}] train_loss={metrics.get('train/loss', float('nan')):.6f} train_acc_est={train_acc_est:.4f}")
         # Always save latest for resilience
         os.makedirs(cfg.checkpoint_path, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "latest.pt"))
@@ -383,7 +410,6 @@ def main():
                 # Save best
                 os.makedirs(cfg.checkpoint_path, exist_ok=True)
                 torch.save(model.state_dict(), os.path.join(cfg.checkpoint_path, "best.pt"))
-                torch.save(model, os.path.join(cfg.checkpoint_path, "best_full.pth"))
                 print(f"[epoch {epoch}] New best model saved (val_loss={best_val:.6f})")
             else:
                 bad_epochs += 1
@@ -479,7 +505,9 @@ def main():
             _, _, _, outputs, _ = self.mdl(carry=carry, batch=batch, return_keys=["logits"])  # type: ignore
             return outputs["logits"]  # [B, C]
 
-    iw = InferenceWrapper(model).to(device).eval()
+    # Use underlying module for export if DataParallel is active
+    export_model = model.module if hasattr(model, "module") else model
+    iw = InferenceWrapper(export_model).to(device).eval()
     dummy = torch.zeros((1, INPUT_WINDOW_CANDLES, num_features), dtype=torch.float32, device=device)
     # TorchScript
     try:
