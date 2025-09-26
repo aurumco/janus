@@ -54,18 +54,25 @@ OUTPUT_DIR = "/kaggle/working"
 # Environment for clean/minimal run
 os.environ.setdefault("DATA_PATH", DATA_PARQUET)
 os.environ.setdefault("OUTPUT_DIR", OUTPUT_DIR)
-# Silence CUDA probing (use CPU by default to avoid capability warnings)
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 # Silence and offline W&B (no login prompt, no network)
 os.environ.setdefault("WANDB_SILENT", "true")
 os.environ.setdefault("WANDB_CONSOLE", "off")
 os.environ.setdefault("WANDB_MODE", "offline")
 
-# Minimal dep install (best effort)
+# Minimal dep install (best effort) — do NOT reinstall torch, keep Kaggle's CUDA build intact
 if os.path.exists(REQ_PATH):
     try:
         print("[setup] Installing requirements...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", REQ_PATH, "--quiet", "--no-input"], check=True)
+        filtered_req = "/kaggle/working/requirements.txt"
+        with open(REQ_PATH, "r") as rf, open(filtered_req, "w") as wf:
+            for line in rf:
+                pkg = line.strip()
+                if not pkg or pkg.startswith("#"):
+                    continue
+                if pkg.split("[")[0].split("==")[0].strip().lower() == "torch":
+                    continue
+                wf.write(line)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", filtered_req, "--quiet", "--no-input", "--no-deps"], check=True)
     except Exception as e:
         print(f"[warn] Requirements install returned an error: {e}")
 
@@ -79,10 +86,18 @@ if not os.path.exists(DATA_PARQUET):
             print(os.path.join(d, fn))
     raise SystemExit(1)
 
+# Brief device info
+try:
+    import torch
+    print(f"[info] CUDA available: {torch.cuda.is_available()} | devices: {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
+except Exception:
+    pass
+
 # Launch training
 print("[run] Starting HRM training on Kaggle...")
 try:
-    sys.path.insert(0, HRM_DIR)
+    os.chdir(HRM_DIR)
+    sys.path.insert(0, ".")
     from pretrain import main as train_main
     train_main()
 except Exception as e:

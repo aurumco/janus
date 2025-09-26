@@ -1,6 +1,5 @@
 import os
-# Silence CUDA probing and WANDB verbosity before importing torch/wandb
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+# Silence WANDB verbosity before importing torch/wandb
 os.environ.setdefault("WANDB_SILENT", "true")
 os.environ.setdefault("WANDB_CONSOLE", "off")
 
@@ -224,7 +223,14 @@ def main():
         device = None
     # Else try CUDA
     if device is None:
-        if torch.cuda.is_available():
+        # Extra diagnostics
+        try:
+            cuda_available = torch.cuda.is_available()
+            cuda_count = torch.cuda.device_count() if cuda_available else 0
+            print(f"[info] torch.cuda.is_available={cuda_available}, device_count={cuda_count}, torch.version.cuda={getattr(torch.version, 'cuda', None)}")
+        except Exception:
+            pass
+        if torch.cuda.device_count() > 0 or torch.cuda.is_available():
             device = torch.device("cuda")
         else:
             raise RuntimeError("No TPU or GPU detected. Please enable TPU or GPU in your environment.")
