@@ -69,7 +69,7 @@ class HierarchicalReasoningModel_ACTV1Block(nn.Module):
             hidden_size=config.hidden_size,
             expansion=config.expansion,
         )
-        self.dropout = nn.Dropout(0.2)
+        self.dropout = nn.Dropout(0.5)
         self.norm_eps = config.rms_norm_eps
 
     def forward(self, cos_sin: CosSin, hidden_states: torch.Tensor) -> torch.Tensor:
