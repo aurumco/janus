@@ -91,7 +91,13 @@ class ACTLossHead(nn.Module):
             logits_last = outputs["logits"]  # [B, C] or [C]
             if logits_last.ndim == 1:
                 logits_last = logits_last.unsqueeze(0)
-            preds = torch.argmax(logits_last, dim=-1).view(-1)
+            # Align devices
+            if labels.device != logits_last.device:
+                labels = labels.to(logits_last.device)
+            preds = torch.argmax(logits_last, dim=-1)
+            if preds.ndim == 0:
+                preds = preds.unsqueeze(0)
+            preds = preds.view(-1)
             labels = labels.view(-1)
             # Align lengths defensively
             n = min(preds.numel(), labels.numel())
@@ -112,6 +118,8 @@ class ACTLossHead(nn.Module):
         logits_last = outputs["logits"]  # [B, C] or [C]
         if logits_last.ndim == 1:
             logits_last = logits_last.unsqueeze(0)
+        if labels.device != logits_last.device:
+            labels = labels.to(logits_last.device)
         weight = None
         if self.class_weights is not None:
             weight = self.class_weights.to(logits_last.device)
