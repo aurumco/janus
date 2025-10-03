@@ -4,8 +4,18 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
-from arch import arch_model
+
+try:
+    import pandas_ta as ta
+except ImportError:
+    print("Warning: pandas_ta not installed. Install with: pip install pandas-ta")
+    ta = None
+
+try:
+    from arch import arch_model
+except ImportError:
+    print("Warning: arch not installed. Install with: pip install arch")
+    arch_model = None
 
 
 class IndicatorCalculator:

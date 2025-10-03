@@ -8,7 +8,7 @@ model:
   num_classes: 5
 
 data:
-  input_window: 27
+  input_window: 64
   num_features: 13
   feature_columns:
     - "RSI_14_M15"

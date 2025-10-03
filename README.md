@@ -4,7 +4,7 @@ A state-of-the-art Bitcoin price trend classification system using the Mamba (Se
 
 ## 🎯 Project Overview
 
-This classifier analyzes Bitcoin market data to predict price trends over the next 42 candles (15-minute timeframe), categorizing movements into:
+This classifier analyzes Bitcoin market data and predicts price trends over the next 20 candles (15-minute timeframe), categorizing movements into:
 
 - **Class 0**: Strong Sell (< -2%)
 - **Class 1**: Sell (-2% to -0.5%)
@@ -51,9 +51,12 @@ The project implements the Mamba architecture, which offers:
 
 ### Input Format
 
-- **Sequence Length**: 27 candles
-- **Input Shape**: (batch_size, 27, 13)
+- **Sequence Length**: 64 candles (16 hours of 15-min data)
+- **Prediction Horizon**: 20 candles ahead (5 hours)
+- **Input Shape**: (batch_size, 64, 13)
 - **Normalization**: All features scaled to [-1, 1]
+- **Stop Loss**: Dynamic ATR-based (1.4x ATR) or fixed 0.4%
+- **Risk/Reward**: Tiered exits at 1.5x, 2.0x, 4.0x stop distance
 
 ## 🚀 Quick Start
 

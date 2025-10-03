@@ -14,10 +14,14 @@ class DatasetConfig:
     train_end: str = "2025-06-30"
     test_start: str = "2025-07-01"
 
-    input_window_candles: int = 27
-    target_window_candles: int = 42
-    stop_loss_pct: float = 0.003
+    input_window_candles: int = 64
+    target_window_candles: int = 20
+    stop_loss_pct: float = 0.004
+    use_atr_stop_loss: bool = True
+    atr_multiplier: float = 1.4
+    atr_period: int = 14
     profit_thresholds: List[float] = None
+    risk_reward_ratios: List[float] = None
 
     scaler_feature_range: Tuple[float, float] = (-1.0, 1.0)
     round_decimals: int = 5
@@ -54,5 +58,11 @@ class DatasetConfig:
 
     def __post_init__(self) -> None:
         """Initialize default values after dataclass creation."""
+        if self.risk_reward_ratios is None:
+            self.risk_reward_ratios = [1.5, 2.0, 4.0]
+        
         if self.profit_thresholds is None:
-            self.profit_thresholds = [0.02, 0.05, 0.10]
+            base_sl = self.stop_loss_pct
+            self.profit_thresholds = [
+                base_sl * rr for rr in self.risk_reward_ratios
+            ]

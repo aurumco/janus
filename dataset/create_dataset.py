@@ -1,5 +1,6 @@
 """Main script for creating Janus Bitcoin trend dataset."""
 
+import sys
 import time
 from pathlib import Path
 
@@ -7,9 +8,14 @@ import joblib
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
-from .config import DatasetConfig
-from .data_processor import MultiTimeframeProcessor
-from .labeling import PriceLabelingStrategy
+try:
+    from .config import DatasetConfig
+    from .data_processor import MultiTimeframeProcessor
+    from .labeling import PriceLabelingStrategy
+except ImportError:
+    from config import DatasetConfig
+    from data_processor import MultiTimeframeProcessor
+    from labeling import PriceLabelingStrategy
 
 
 class DatasetBuilder:
@@ -27,7 +33,10 @@ class DatasetBuilder:
         self.processor = MultiTimeframeProcessor(config)
         self.labeler = PriceLabelingStrategy(
             lookahead=config.target_window_candles,
-            sl_filter_pct=config.sl_filter_pct
+            sl_filter_pct=config.sl_filter_pct,
+            use_atr_stop=config.use_atr_stop_loss,
+            atr_multiplier=config.atr_multiplier,
+            atr_period=config.atr_period,
         )
 
     def _log(self, message: str) -> None:
@@ -153,11 +162,24 @@ class DatasetBuilder:
 
 def main() -> None:
     """Main execution function."""
+    import sys
+    
+    if len(sys.argv) > 1:
+        csv_path = sys.argv[1]
+    else:
+        csv_path = 'btc.csv'
+    
     config = DatasetConfig()
     builder = DatasetBuilder(config, verbose=True)
 
-    dataset, scaler = builder.build('btc.csv')
-    builder.save(dataset, scaler)
+    try:
+        dataset, scaler = builder.build(csv_path)
+        builder.save(dataset, scaler)
+    except FileNotFoundError:
+        print(f"\nError: CSV file not found: {csv_path}")
+        print("Usage: python create_dataset.py [path_to_btc.csv]")
+        print("\nPlease provide the path to your BTC CSV file.")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
@@ -28,6 +29,7 @@ class Trainer:
         log_dir: Optional[Path] = None,
         early_stopping_patience: int = 10,
         early_stopping_min_delta: float = 0.0001,
+        use_amp: bool = False,
     ) -> None:
         """Initialize trainer.
 
@@ -42,12 +44,15 @@ class Trainer:
             log_dir: Directory for TensorBoard logs.
             early_stopping_patience: Epochs to wait before early stopping.
             early_stopping_min_delta: Minimum change to qualify as improvement.
+            use_amp: Whether to use automatic mixed precision.
         """
         self.model = model
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
         self.scheduler = scheduler
+        self.use_amp = use_amp
+        self.scaler = GradScaler() if self.use_amp else None
         self.gradient_clip = gradient_clip
         self.checkpoint_dir = checkpoint_dir
         self.early_stopping_patience = early_stopping_patience
@@ -91,18 +96,36 @@ class Trainer:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
 
-            loss.backward()
-
-            if self.gradient_clip:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.gradient_clip
-                )
-
-            self.optimizer.step()
+            if self.use_amp:
+                with autocast():
+                    outputs = self.model(inputs)
+                    loss = self.criterion(outputs, targets)
+                
+                self.scaler.scale(loss).backward()
+                
+                if self.gradient_clip:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.gradient_clip
+                    )
+                
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+                
+                loss.backward()
+                
+                if self.gradient_clip:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.gradient_clip
+                    )
+                
+                self.optimizer.step()
 
             total_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -175,9 +198,11 @@ class Trainer:
         Returns:
             Training history dictionary.
         """
+        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
         print(f"\nStarting training for {epochs} epochs...")
         print(f"Device: {self.device}")
-        print(f"Model parameters: {self.model.get_num_parameters()}")
+        print(f"Mixed Precision: {self.use_amp}")
+        print(f"Model parameters: {actual_model.get_num_parameters()}")
 
         for epoch in range(1, epochs + 1):
             epoch_start_time = time.time()

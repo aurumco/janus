@@ -51,16 +51,18 @@ def save_model_architecture(model: torch.nn.Module, output_path: Path) -> None:
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    actual_model = model.module if hasattr(model, 'module') else model
+
     with open(output_path, 'w') as f:
         f.write("="*70 + "\n")
         f.write("MODEL ARCHITECTURE\n")
         f.write("="*70 + "\n\n")
-        f.write(str(model))
+        f.write(str(actual_model))
         f.write("\n\n" + "="*70 + "\n")
         f.write("PARAMETER COUNT\n")
         f.write("="*70 + "\n")
 
-        params = model.get_num_parameters()
+        params = actual_model.get_num_parameters()
         f.write(f"Total parameters: {params['total']:,}\n")
         f.write(f"Trainable parameters: {params['trainable']:,}\n")
         f.write("="*70 + "\n")

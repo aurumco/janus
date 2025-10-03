@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pandas_ta as ta
 from rich.console import Console
 from rich.progress import track
 
@@ -104,6 +105,7 @@ class BacktestEngine:
         side: PositionSide,
         price: float,
         timestamp: str,
+        atr_value: float,
         pyramid_level: int = 0,
     ) -> None:
         """Open a new position.
@@ -112,6 +114,7 @@ class BacktestEngine:
             side: Position side (LONG/SHORT).
             price: Entry price.
             timestamp: Entry timestamp.
+            atr_value: Current ATR value for dynamic stops.
             pyramid_level: Pyramid level (0 for initial position).
         """
         size = self.calculate_position_size(price)
@@ -122,11 +125,17 @@ class BacktestEngine:
         entry_fee = self.calculate_fees(size, price, is_maker=False)
         slippage = self.calculate_slippage(size, price)
         
-        stop_loss = None
-        if side == PositionSide.LONG:
-            stop_loss = price * (1 - self.config.stop_loss_pct)
+        if self.config.use_atr_stop and atr_value > 0:
+            stop_distance = atr_value * self.config.atr_multiplier
         else:
-            stop_loss = price * (1 + self.config.stop_loss_pct)
+            stop_distance = price * self.config.stop_loss_pct
+        
+        if side == PositionSide.LONG:
+            stop_loss = price - stop_distance
+            take_profit = price + (stop_distance * self.config.risk_reward_ratio)
+        else:
+            stop_loss = price + stop_distance
+            take_profit = price - (stop_distance * self.config.risk_reward_ratio)
         
         self.current_position = Position(
             side=side,
@@ -135,6 +144,7 @@ class BacktestEngine:
             leverage=self.config.leverage,
             entry_timestamp=timestamp,
             stop_loss=stop_loss,
+            take_profit=take_profit,
             pyramid_level=pyramid_level,
             entry_fee=entry_fee,
         )
@@ -280,7 +290,7 @@ class BacktestEngine:
         """Run backtest on data with predictions.
 
         Args:
-            data: OHLCV DataFrame.
+            data: OHLCV DataFrame with columns: open, high, low, close, volume.
             predictions: Model predictions array.
 
         Returns:
@@ -288,10 +298,20 @@ class BacktestEngine:
         """
         self.console.print("\n[bold cyan]Starting Backtest...[/bold cyan]\n")
         
+        atr_period = 14
+        atr_series = ta.atr(
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            length=atr_period
+        )
+        atr_values = atr_series.bfill().fillna(0.0).values
+        
         for i in track(range(len(data)), description="Processing..."):
             row = data.iloc[i]
             timestamp = str(row.name)
             signal = int(predictions[i])
+            current_atr = atr_values[i]
             
             self.timestamps.append(timestamp)
             self.equity_curve.append(self.capital)
@@ -304,9 +324,10 @@ class BacktestEngine:
                 if self.config.use_trailing_stop:
                     current_pnl_pct = self.current_position.calculate_pnl_percentage(row['close'])
                     if current_pnl_pct > self.config.trailing_stop_activation_pct * 100:
+                        trailing_distance = (current_atr / row['close']) if self.config.use_atr_stop else self.config.trailing_stop_distance_pct
                         self.current_position.update_trailing_stop(
                             row['close'],
-                            self.config.trailing_stop_distance_pct
+                            trailing_distance
                         )
                 
                 should_close, reason = self.should_close_position(
@@ -326,7 +347,7 @@ class BacktestEngine:
             if self.current_position is None:
                 side = self.should_open_position(signal)
                 if side is not None:
-                    self.open_position(side, row['close'], timestamp)
+                    self.open_position(side, row['close'], timestamp, current_atr)
         
         if self.current_position is not None:
             self.close_position(

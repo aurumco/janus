@@ -13,3 +13,4 @@ pandas-ta>=0.4.71b0
 arch>=7.2.0
 joblib>=1.5.2
 rich>=14.1.0
+causal-conv1d>=1.5.2

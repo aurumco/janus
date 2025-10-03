@@ -124,10 +124,17 @@ def main() -> None:
         n_layers=config.get('model.n_layers'),
         num_classes=config.get('model.num_classes'),
         dropout=config.get('model.dropout'),
-    ).to(device)
+    )
+    
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+        model = nn.DataParallel(model)
+    
+    model = model.to(device)
 
+    actual_model = model.module if hasattr(model, 'module') else model
     print("Model created successfully")
-    print(f"Parameters: {model.get_num_parameters()}\n")
+    print(f"Parameters: {actual_model.get_num_parameters()}\n")
 
     save_model_architecture(model, results_dir / 'model_architecture.txt')
 
@@ -155,6 +162,7 @@ def main() -> None:
         log_dir=log_dir if config.get('logging.tensorboard') else None,
         early_stopping_patience=config.get('training.early_stopping_patience'),
         early_stopping_min_delta=config.get('training.early_stopping_min_delta'),
+        use_amp=config.get('device.mixed_precision', False),
     )
 
     if args.resume:

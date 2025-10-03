@@ -3,9 +3,14 @@
 from typing import Dict, List
 
 import pandas as pd
+import numpy as np
 
-from .config import DatasetConfig
-from .indicators import IndicatorCalculator
+try:
+    from .config import DatasetConfig
+    from .indicators import IndicatorCalculator
+except ImportError:
+    from config import DatasetConfig
+    from indicators import IndicatorCalculator
 
 
 class MultiTimeframeProcessor:
@@ -104,7 +109,7 @@ class MultiTimeframeProcessor:
 
         df_h1['log_return'] = pd.Series(
             df_h1['close'] / df_h1['close'].shift(1)
-        ).apply(lambda x: 0 if x <= 0 else pd.np.log(x))
+        ).apply(lambda x: 0 if x <= 0 else np.log(x))
 
         df_h1['RSI_14_H1'] = self.indicator_calc.calculate_rsi(df_h1['close'], self.config.h1_rsi_length)
         df_h1['ADX_14_H1'] = self.indicator_calc.calculate_adx(

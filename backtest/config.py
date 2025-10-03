@@ -16,8 +16,10 @@ class BacktestConfig:
     backtest_start_date: str = '2025-08-01'
     backtest_end_date: str = '2025-09-30'
     risk_per_trade: float = 0.1
-    stop_loss_pct: float = 0.01
-    risk_reward_ratio: float = 10.0
+    stop_loss_pct: float = 0.004
+    use_atr_stop: bool = True
+    atr_multiplier: float = 1.4
+    risk_reward_ratio: float = 2.0
 
     slippage_pct: float = 0.0005
     maker_fee: float = 0.0002

@@ -79,7 +79,7 @@ def generate_predictions(
             confidence = max_prob.item()
             
             if confidence < confidence_threshold:
-                pred = torch.tensor([2])
+                pred = torch.tensor([2], device=output.device)
             
             predictions.append(pred.item())
             confidences.append(confidence)
@@ -131,6 +131,35 @@ def main() -> None:
         confidence_threshold=args.confidence_threshold,
     )
 
+    print("Loading OHLCV data for backtest...")
+    try:
+        ohlcv_raw = pd.read_csv('dataset/btc.csv')
+        ohlcv_raw.columns = ohlcv_raw.columns.str.lower()
+        timestamps = pd.to_numeric(ohlcv_raw['timestamp'], errors='coerce')
+        unit = 'ms' if timestamps.max() > 1e12 else 's'
+        ohlcv_raw['timestamp'] = pd.to_datetime(timestamps, unit=unit, errors='coerce')
+        ohlcv_raw.set_index('timestamp', inplace=True)
+        ohlcv_raw = ohlcv_raw.resample('15min').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+        
+        ohlcv_data = ohlcv_raw.loc[backtest_data.index].copy()
+        ohlcv_data = ohlcv_data[['open', 'high', 'low', 'close', 'volume']]
+        
+    except FileNotFoundError:
+        print("Warning: btc.csv not found, using synthetic OHLCV from dataset index")
+        ohlcv_data = pd.DataFrame({
+            'open': backtest_data.index.to_series().shift(1),
+            'high': backtest_data.index.to_series().shift(1),
+            'low': backtest_data.index.to_series().shift(1),
+            'close': backtest_data.index.to_series(),
+            'volume': 1000.0,
+        })
+
     backtest_config = BacktestConfig(
         initial_capital_usd=args.initial_capital,
         leverage=args.leverage,
@@ -139,14 +168,6 @@ def main() -> None:
     )
 
     engine = BacktestEngine(backtest_config)
-
-    ohlcv_data = pd.DataFrame({
-        'open': backtest_data.index.to_series().shift(1),
-        'high': backtest_data.index.to_series().shift(1),
-        'low': backtest_data.index.to_series().shift(1),
-        'close': backtest_data.index.to_series(),
-    })
-
     metrics = engine.run(ohlcv_data, predictions)
 
     reporter = BacktestReporter()
