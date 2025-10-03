@@ -10,13 +10,10 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
-try:
-    from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_AVAILABLE = True
-except (ImportError, AttributeError):
-    TENSORBOARD_AVAILABLE = False
-    SummaryWriter = None
 from tqdm import tqdm
+
+TENSORBOARD_AVAILABLE = False
+SummaryWriter = None
 
 
 class Trainer:
@@ -67,9 +64,13 @@ class Trainer:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.writer = None
-        if log_dir and TENSORBOARD_AVAILABLE:
+        if log_dir:
             log_dir.mkdir(parents=True, exist_ok=True)
-            self.writer = SummaryWriter(log_dir=str(log_dir))
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                self.writer = SummaryWriter(log_dir=str(log_dir))
+            except (ImportError, AttributeError, ValueError) as e:
+                print(f"TensorBoard unavailable: {e}. Training will continue without logging.")
 
         self.best_val_loss = float('inf')
         self.patience_counter = 0
