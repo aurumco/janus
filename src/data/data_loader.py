@@ -1,10 +1,9 @@
 """Data loading and preparation utilities."""
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
 from .base_strategy import DataProcessingStrategy
@@ -56,7 +55,7 @@ class DataLoaderFactory:
             raise ValueError("Train, val, and test ratios must sum to 1.0")
 
     def create_data_loaders(self) -> Dict[str, DataLoader]:
-        """Create train, validation, and test data loaders.
+        """Create train, validation, and test data loaders using time-based split.
 
         Returns:
             Dictionary with 'train', 'val', and 'test' DataLoaders.
@@ -65,20 +64,18 @@ class DataLoaderFactory:
 
         X, y = self.processing_strategy.process(data)
 
-        X_temp, X_test, y_temp, y_test = train_test_split(
-            X, y,
-            test_size=self.test_ratio,
-            random_state=self.random_seed,
-            stratify=y,
-        )
+        n_samples = len(X)
+        train_end = int(n_samples * self.train_ratio)
+        val_end = int(n_samples * (self.train_ratio + self.val_ratio))
 
-        val_ratio_adjusted = self.val_ratio / (self.train_ratio + self.val_ratio)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_temp, y_temp,
-            test_size=val_ratio_adjusted,
-            random_state=self.random_seed,
-            stratify=y_temp,
-        )
+        X_train = X[:train_end]
+        y_train = y[:train_end]
+        
+        X_val = X[train_end:val_end]
+        y_val = y[train_end:val_end]
+        
+        X_test = X[val_end:]
+        y_test = y[val_end:]
 
         train_dataset = BitcoinTrendDataset(X_train, y_train)
         val_dataset = BitcoinTrendDataset(X_val, y_val)

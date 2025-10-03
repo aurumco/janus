@@ -49,8 +49,9 @@ def generate_predictions(
     feature_columns: list,
     sequence_length: int,
     device: torch.device,
-) -> np.ndarray:
-    """Generate predictions for backtest data.
+    confidence_threshold: float = 0.6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate predictions with probabilities for backtest data.
 
     Args:
         model: Trained model.
@@ -58,11 +59,13 @@ def generate_predictions(
         feature_columns: List of feature column names.
         sequence_length: Input sequence length.
         device: Device for inference.
+        confidence_threshold: Minimum confidence to enter position.
 
     Returns:
-        Array of predictions.
+        Tuple of (predictions, confidences) arrays.
     """
     predictions = []
+    confidences = []
 
     with torch.no_grad():
         for i in range(sequence_length - 1, len(data)):
@@ -70,11 +73,21 @@ def generate_predictions(
             sequence_tensor = torch.FloatTensor(sequence).unsqueeze(0).to(device)
 
             output = model(sequence_tensor)
-            pred = output.argmax(dim=1).item()
-            predictions.append(pred)
+            probabilities = torch.softmax(output, dim=1)
+            
+            max_prob, pred = probabilities.max(dim=1)
+            confidence = max_prob.item()
+            
+            if confidence < confidence_threshold:
+                pred = torch.tensor([2])
+            
+            predictions.append(pred.item())
+            confidences.append(confidence)
 
-    padding = [2] * (sequence_length - 1)
-    return np.array(padding + predictions)
+    padding_pred = [2] * (sequence_length - 1)
+    padding_conf = [0.0] * (sequence_length - 1)
+    
+    return np.array(padding_pred + predictions), np.array(padding_conf + confidences)
 
 
 def main() -> None:
@@ -87,6 +100,7 @@ def main() -> None:
     parser.add_argument('--end-date', type=str, default='2025-09-30', help='Backtest end date')
     parser.add_argument('--initial-capital', type=float, default=6000000, help='Initial capital')
     parser.add_argument('--leverage', type=int, default=5, help='Leverage')
+    parser.add_argument('--confidence-threshold', type=float, default=0.6, help='Minimum confidence for trades')
 
     args = parser.parse_args()
 
@@ -107,12 +121,14 @@ def main() -> None:
         return
 
     print(f"Generating predictions for {len(backtest_data)} samples...")
-    predictions = generate_predictions(
+    print(f"Using confidence threshold: {args.confidence_threshold:.1%}")
+    predictions, confidences = generate_predictions(
         model,
         backtest_data,
         config.get('data.feature_columns'),
         config.get('data.input_window'),
         device,
+        confidence_threshold=args.confidence_threshold,
     )
 
     backtest_config = BacktestConfig(
