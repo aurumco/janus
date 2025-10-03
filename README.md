@@ -197,7 +197,7 @@ training:
 ### Data Parameters
 ```yaml
 data:
-  input_window: 27      # Sequence length
+  input_window: 27
   batch_size: 128
   train_ratio: 0.7
   val_ratio: 0.15
@@ -353,15 +353,7 @@ evaluator.print_metrics(metrics)
 
 ## 📄 License
 
-This project is part of the Janus cryptocurrency prediction system.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please ensure:
-- Code follows PEP 8 and project style
-- All functions have type hints and docstrings
-- Tests pass before submitting
-- Clean, readable, and well-documented code
+This project is part of the Eunai cryptocurrency prediction system.
 
 ## 📧 Contact
 
@@ -369,4 +361,4 @@ For questions or issues, please open an issue on the repository.
 
 ---
 
-**Built with ❤️ using PyTorch and the Mamba architecture**
+**Built with ❤️ by Aurum**
