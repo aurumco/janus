@@ -10,7 +10,12 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except (ImportError, AttributeError):
+    TENSORBOARD_AVAILABLE = False
+    SummaryWriter = None
 from tqdm import tqdm
 
 
@@ -62,7 +67,7 @@ class Trainer:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.writer = None
-        if log_dir:
+        if log_dir and TENSORBOARD_AVAILABLE:
             log_dir.mkdir(parents=True, exist_ok=True)
             self.writer = SummaryWriter(log_dir=str(log_dir))
 
