@@ -1,0 +1,88 @@
+model:
+  name: "MambaBTC"
+  d_model: 128
+  d_state: 16
+  d_conv: 4
+  n_layers: 4
+  dropout: 0.2
+  num_classes: 5
+
+data:
+  input_window: 27
+  num_features: 13
+  feature_columns:
+    - "RSI_14_M15"
+    - "ATR_5_pct_M15"
+    - "dist_from_ema_10_M15"
+    - "ema10_slope_M15"
+    - "volume_oscillator_M15"
+    - "obv_M15"
+    - "hour_sin"
+    - "hour_cos"
+    - "RSI_14_H1"
+    - "ADX_14_H1"
+    - "EMA_diff_21_H4pct"
+    - "RSI_15_x_NYHours"
+    - "garch_volatility"
+  target_column: "target"
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  batch_size: 128
+  num_workers: 4
+  shuffle_train: true
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip: 1.0
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.0001
+  save_best_only: true
+  
+loss:
+  type: "cross_entropy"
+  label_smoothing: 0.1
+  class_weights: null
+
+paths:
+  data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
+  output_dir: "/kaggle/working"
+  checkpoint_dir: "checkpoints"
+  results_dir: "results"
+  logs_dir: "logs"
+
+device:
+  use_cuda: true
+  device_id: 0
+  mixed_precision: true
+
+logging:
+  log_interval: 10
+  save_interval: 1
+  tensorboard: true
+  wandb: false
+
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "confusion_matrix"
+    - "roc_auc"
+  plot_confusion_matrix: true
+  plot_roc_curves: true
+  plot_training_curves: true
+  class_names:
+    - "Strong Sell"
+    - "Sell"
+    - "Neutral"
+    - "Buy"
+    - "Strong Buy"
+
+seed: 42
