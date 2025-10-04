@@ -71,6 +71,38 @@ class InstallationStrategy(ABC):
         cmd = [sys.executable, "-m", "pip"] + args
         return subprocess.run(cmd, check=check, capture_output=capture_output)
 
+    def _is_package_installed(self, package_name: str, min_version: Optional[str] = None) -> bool:
+        """Check if a package is installed with optional version check.
+        
+        Args:
+            package_name: Name of the package to check.
+            min_version: Optional minimum version required.
+            
+        Returns:
+            True if package is installed (and meets version requirement).
+        """
+        try:
+            result = self._run_pip_command(
+                ["show", package_name],
+                check=False,
+                capture_output=True
+            )
+            if result.returncode != 0:
+                return False
+            
+            if min_version:
+                # Extract version from pip show output
+                output = result.stdout.decode("utf-8")
+                for line in output.split("\n"):
+                    if line.startswith("Version:"):
+                        installed_version = line.split(":")[1].strip()
+                        # Simple version comparison (works for most cases)
+                        from packaging import version
+                        return version.parse(installed_version) >= version.parse(min_version)
+            return True
+        except Exception:
+            return False
+
 
 class KaggleInstallationStrategy(InstallationStrategy):
     """Installation strategy optimized for Kaggle environment.
@@ -101,84 +133,70 @@ class KaggleInstallationStrategy(InstallationStrategy):
 
     def install_core_packages(self) -> None:
         """Install core packages with Kaggle-specific handling."""
-        self._log("Upgrading core packages for Kaggle environment...")
+        self._log("Checking core packages...")
         
-        # Uninstall scikit-learn variants to avoid mixed installations
-        self._log("Removing existing scikit-learn installations...")
-        try:
-            self._run_pip_command(
-                ["uninstall", "-y", "scikit-learn", "scikit_learn", "sklearn"],
-                check=False
-            )
-        except Exception as e:
-            self._log(f"Warning: Failed to uninstall scikit-learn: {e}")
-
-        # Core packages with version constraints compatible with Kaggle
         core_packages = [
-            "numpy>=1.22,<2.1",
-            "scipy>=1.7.0,<1.14.0",
-            "pandas>=2.2.2,<2.3",
-            "scikit-learn>=1.5.2,<2.0",
+            ("numpy", "1.22"),
+            ("scipy", "1.7.0"),
+            ("pandas", "2.2.2"),
+            ("scikit-learn", "1.5.2"),
         ]
-
-        # Phase 1: Install packages without dependencies to avoid conflicts
-        for pkg in core_packages:
+        
+        packages_to_install = []
+        for pkg_name, min_version in core_packages:
+            if not self._is_package_installed(pkg_name, min_version):
+                self._log(f"{pkg_name} needs installation/upgrade")
+                packages_to_install.append(pkg_name)
+            else:
+                self._log(f"✓ {pkg_name} already installed with compatible version")
+        
+        if not packages_to_install:
+            self._log("All core packages are up to date")
+            return
+        
+        # Install only packages that need it
+        package_specs = {
+            "numpy": "numpy>=1.22,<2.1",
+            "scipy": "scipy>=1.7.0,<1.14.0",
+            "pandas": "pandas>=2.2.2,<2.3",
+            "scikit-learn": "scikit-learn>=1.5.2,<2.0",
+        }
+        
+        for pkg_name in packages_to_install:
             try:
-                self._log(f"Installing {pkg}...")
+                self._log(f"Installing {package_specs[pkg_name]}...")
                 self._run_pip_command(
-                    [
-                        "install",
-                        "--upgrade",
-                        "--force-reinstall",
-                        "--no-deps",
-                        "--no-cache-dir",
-                        pkg,
-                    ]
+                    ["install", "--upgrade", package_specs[pkg_name]],
+                    capture_output=True
                 )
+                self._log(f"✓ {pkg_name} installed successfully")
             except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install {pkg}: {e}")
-
-        # Phase 2: Install dependencies
-        self._log("Installing dependencies for core packages...")
-        try:
-            self._run_pip_command(
-                ["install", "--upgrade", "--no-cache-dir"] + core_packages
-            )
-        except subprocess.CalledProcessError as e:
-            self._log(f"Warning: Failed to install dependencies: {e}")
+                self._log(f"Warning: Failed to install {pkg_name}: {e}")
 
     def install_ml_packages(self) -> None:
         """Install ML-specific packages like mamba-ssm."""
-        self._log("Installing ML-specific packages...")
+        self._log("Checking ML-specific packages...")
         
         ml_packages = [
-            "mamba-ssm>=2.2.5",
-            "causal-conv1d>=1.5.2",
+            ("mamba-ssm", "2.2.5"),
+            ("causal-conv1d", "1.5.2"),
         ]
         
-        for pkg in ml_packages:
+        for pkg_name, min_version in ml_packages:
+            if self._is_package_installed(pkg_name, min_version):
+                self._log(f"✓ {pkg_name} already installed")
+                continue
+            
             try:
-                self._log(f"Installing {pkg}...")
+                self._log(f"Installing {pkg_name}>={min_version}...")
+                # Don't use --no-cache-dir to avoid hash mismatch errors
                 result = self._run_pip_command(
-                    ["install", "--upgrade", "--no-cache-dir", pkg],
-                    capture_output=False  # Show output for debugging
+                    ["install", "--upgrade", f"{pkg_name}>={min_version}"],
+                    capture_output=False
                 )
-                
-                # Verify installation
-                pkg_name = pkg.split(">=")[0].split("==")[0].strip()
-                verify_result = self._run_pip_command(
-                    ["show", pkg_name],
-                    check=False,
-                    capture_output=True
-                )
-                
-                if verify_result.returncode == 0:
-                    self._log(f"✓ {pkg_name} installed successfully")
-                else:
-                    self._log(f"✗ {pkg_name} installation verification failed")
-                    
+                self._log(f"✓ {pkg_name} installed successfully")
             except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install {pkg}: {e}")
+                self._log(f"Warning: Failed to install {pkg_name}: {e}")
 
     def install_from_requirements(self, requirements_path: Path) -> None:
         """Install remaining packages from requirements.txt.
