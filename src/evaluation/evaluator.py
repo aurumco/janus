@@ -1,23 +1,148 @@
-"""Model evaluation module with comprehensive metrics."""
+"""Model evaluation module with comprehensive metrics.
+
+This module prefers scikit-learn for metrics, but falls back to
+NumPy-based implementations if scikit-learn is not available or is
+incompatible in the current environment (e.g., Kaggle images with
+mixed versions). The public API remains the same.
+"""
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    roc_curve,
-)
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+# Attempt to import metrics from scikit-learn. If unavailable or broken,
+# provide light-weight NumPy fallbacks for the metrics we use.
+try:
+    from sklearn.metrics import (
+        accuracy_score,
+        classification_report,
+        confusion_matrix,
+        f1_score,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+        roc_curve,
+    )
+    _SKLEARN_AVAILABLE = True
+except Exception:  # noqa: B902 - broad to catch env import errors
+    _SKLEARN_AVAILABLE = False
+
+    def accuracy_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        correct = (y_true == y_pred).sum()
+        return float(correct) / max(1, y_true.size)
+
+    def confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+        classes = np.unique(np.concatenate([y_true, y_pred]))
+        n = classes.size
+        idx = {c: i for i, c in enumerate(classes)}
+        cm = np.zeros((n, n), dtype=int)
+        for t, p in zip(y_true, y_pred):
+            cm[idx[t], idx[p]] += 1
+        return cm
+
+    def _precision_recall_f1(y_true: np.ndarray, y_pred: np.ndarray, average: str) -> Dict[str, float]:
+        classes = np.unique(np.concatenate([y_true, y_pred]))
+        tp = []
+        fp = []
+        fn = []
+        supports = []
+        for c in classes:
+            yt = (y_true == c)
+            yp = (y_pred == c)
+            tp_i = np.logical_and(yt, yp).sum()
+            fp_i = np.logical_and(~yt, yp).sum()
+            fn_i = np.logical_and(yt, ~yp).sum()
+            sup_i = yt.sum()
+            tp.append(tp_i)
+            fp.append(fp_i)
+            fn.append(fn_i)
+            supports.append(sup_i)
+        tp = np.asarray(tp, dtype=float)
+        fp = np.asarray(fp, dtype=float)
+        fn = np.asarray(fn, dtype=float)
+        supports = np.asarray(supports, dtype=float)
+
+        precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
+        recall = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
+        f1 = np.divide(2 * precision * recall, precision + recall, out=np.zeros_like(precision), where=(precision + recall) > 0)
+
+        if average == "macro":
+            return {
+                "precision": float(precision.mean()),
+                "recall": float(recall.mean()),
+                "f1": float(f1.mean()),
+            }
+        elif average == "weighted":
+            w = np.divide(supports, supports.sum(), out=np.zeros_like(supports), where=supports.sum() > 0)
+            return {
+                "precision": float((precision * w).sum()),
+                "recall": float((recall * w).sum()),
+                "f1": float((f1 * w).sum()),
+            }
+        else:
+            raise ValueError("Unsupported average type for fallback metrics")
+
+    def precision_score(y_true: np.ndarray, y_pred: np.ndarray, average: str = "macro", zero_division: int = 0) -> float:
+        return _precision_recall_f1(y_true, y_pred, average)["precision"]
+
+    def recall_score(y_true: np.ndarray, y_pred: np.ndarray, average: str = "macro", zero_division: int = 0) -> float:
+        return _precision_recall_f1(y_true, y_pred, average)["recall"]
+
+    def f1_score(y_true: np.ndarray, y_pred: np.ndarray, average: str = "macro", zero_division: int = 0) -> float:
+        return _precision_recall_f1(y_true, y_pred, average)["f1"]
+
+    def classification_report(y_true: np.ndarray, y_pred: np.ndarray, target_names: List[str], zero_division: int = 0) -> str:
+        # Minimal text report summarizing precision/recall/f1 per class
+        classes = np.unique(np.concatenate([y_true, y_pred]))
+        lines = ["precision  recall  f1-score  support"]
+        for i, c in enumerate(classes):
+            yt = (y_true == c)
+            yp = (y_pred == c)
+            tp = np.logical_and(yt, yp).sum()
+            fp = np.logical_and(~yt, yp).sum()
+            fn = np.logical_and(yt, ~yp).sum()
+            sup = yt.sum()
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+            name = target_names[i] if i < len(target_names) else str(c)
+            lines.append(f"{name:>10s}  {prec:7.3f}  {rec:6.3f}  {f1:8.3f}  {sup:7d}")
+        return "\n".join(lines)
+
+    def roc_curve(y_true_binary: np.ndarray, y_score: np.ndarray):
+        # y_true_binary in {0,1}
+        order = np.argsort(-y_score)
+        y_true_sorted = y_true_binary[order]
+        y_score_sorted = y_score[order]
+        # thresholds are unique scores
+        thresholds = np.r_[np.inf, np.unique(y_score_sorted)[::-1]]
+        tps = np.cumsum(y_true_sorted)
+        fps = np.cumsum(1 - y_true_sorted)
+        tps = np.r_[0, tps]
+        fps = np.r_[0, fps]
+        P = y_true_binary.sum()
+        N = y_true_binary.size - P
+        tpr = np.divide(tps, P, out=np.zeros_like(tps, dtype=float), where=P > 0)
+        fpr = np.divide(fps, N, out=np.zeros_like(fps, dtype=float), where=N > 0)
+        return fpr, tpr, thresholds
+
+    def roc_auc_score(y_true: np.ndarray, y_prob: np.ndarray, multi_class: str = "ovr", average: str = "macro") -> float:
+        # One-vs-rest AUC per class, macro average
+        classes = np.unique(y_true)
+        aucs = []
+        for c in classes:
+            yb = (y_true == c).astype(int)
+            scores = y_prob[:, int(c)]
+            fpr, tpr, _ = roc_curve(yb, scores)
+            # trapezoidal rule
+            auc = float(np.trapz(tpr, fpr))
+            aucs.append(auc)
+        return float(np.mean(aucs)) if len(aucs) > 0 else 0.0
 
 
 class ModelEvaluator:

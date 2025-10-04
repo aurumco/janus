@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Kaggle training script for Mamba Bitcoin trend classifier."""
+"""Kaggle training script for Mamba Bitcoin trend classifier.
+
+This script uses the Strategy Pattern for flexible package installation
+across different environments, ensuring clean separation of concerns.
+"""
 
 import os
 import sys
@@ -58,38 +62,58 @@ def ensure_repository() -> str:
 
 
 def install_requirements(repo_root: str) -> None:
-    """Install required packages.
+    """Install required packages using Strategy Pattern.
+
+    This function uses the InstallationContext with KaggleInstallationStrategy
+    to handle package installation in a clean, maintainable way.
 
     Args:
         repo_root: Path to repository root.
     """
-    req_path = os.path.join(repo_root, "requirements.txt")
+    req_path = Path(repo_root) / "requirements.txt"
 
-    if not os.path.exists(req_path):
+    if not req_path.exists():
         print("[warn] requirements.txt not found, skipping installation")
         return
 
+    # Add src to path to import our installation strategies
+    sys.path.insert(0, str(Path(repo_root) / "src"))
+    
     try:
-        print("[setup] Installing requirements...")
-        filtered_req = "/kaggle/working/requirements_filtered.txt"
+        from setup.install_strategies import (
+            KaggleInstallationStrategy,
+            InstallationContext,
+        )
+        
+        # Create installation context with Kaggle strategy
+        strategy = KaggleInstallationStrategy(verbose=True)
+        context = InstallationContext(strategy)
+        
+        # Execute complete installation process
+        context.install_all(requirements_path=req_path)
+        
+    except ImportError as e:
+        print(f"[error] Failed to import installation strategies: {e}")
+        print("[info] Falling back to basic installation...")
+        _fallback_install(req_path)
+    except Exception as e:
+        print(f"[warn] Installation error: {e}")
 
-        with open(req_path, "r") as rf, open(filtered_req, "w") as wf:
-            for line in rf:
-                pkg = line.strip()
-                if not pkg or pkg.startswith("#"):
-                    continue
-                pkg_name = pkg.split("[")[0].split("==")[0].split(">=")[0].split("<")[0].strip().lower()
-                if pkg_name in ["torch", "mamba-ssm", "modular", "numpy", "scipy", "pandas", "scikit-learn"]:
-                    continue
-                wf.write(line)
 
+def _fallback_install(req_path: Path) -> None:
+    """Fallback installation method if Strategy Pattern import fails.
+    
+    Args:
+        req_path: Path to requirements.txt file.
+    """
+    try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", filtered_req, "--quiet"],
+            [sys.executable, "-m", "pip", "install", "-r", str(req_path), "--quiet"],
             check=True
         )
-        print("[setup] Requirements installed successfully")
-    except Exception as e:
-        print(f"[warn] Requirements installation error: {e}")
+        print("[setup] Requirements installed successfully (fallback method)")
+    except subprocess.CalledProcessError as e:
+        print(f"[warn] Fallback installation failed: {e}")
 
 
 def validate_dataset() -> None:
@@ -135,16 +159,20 @@ def main() -> None:
     sys.path.insert(0, str(repo_root))
 
     print("\n" + "="*70)
-    print("[run] Starting training...")
+    print("[run] Starting training (fresh Python subprocess)...")
     print("="*70 + "\n")
 
+    # Run training in a fresh process to ensure newly installed packages are imported cleanly.
+    # This prevents stale modules (e.g., old scikit-learn) from lingering in sys.modules.
+    cmd = [
+        sys.executable,
+        "-u",
+        "train.py",
+    ]
     try:
-        from train import main as train_main
-        train_main()
-    except Exception as e:
-        print(f"[error] Training failed: {e}")
-        import traceback
-        traceback.print_exc()
+        result = subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[error] Training subprocess failed with return code {e.returncode}")
         raise
 
     print("\n" + "="*70)
