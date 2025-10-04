@@ -5,12 +5,12 @@ across different environments (Kaggle, local, etc.) with clean separation
 of concerns and extensibility.
 """
 
-import os
 import subprocess
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
+import os
 
 
 class InstallationStrategy(ABC):
@@ -19,14 +19,6 @@ class InstallationStrategy(ABC):
     This defines the interface that all concrete installation strategies
     must implement, following the Strategy Pattern.
     """
-
-    def __init__(self, env_overrides: Optional[Dict[str, str]] = None) -> None:
-        """Initialise strategy with optional environment overrides.
-
-        Args:
-            env_overrides: Environment variables applied to pip commands.
-        """
-        self._env_overrides = env_overrides or {}
 
     @abstractmethod
     def install_core_packages(self) -> None:
@@ -63,7 +55,7 @@ class InstallationStrategy(ABC):
         args: List[str],
         check: bool = True,
         capture_output: bool = True,
-        extra_env: Optional[Dict[str, str]] = None,
+        env: Optional[dict] = None,
     ) -> subprocess.CompletedProcess:
         """Execute a pip command with standard error handling.
         
@@ -71,7 +63,6 @@ class InstallationStrategy(ABC):
             args: List of pip command arguments.
             check: Whether to raise exception on non-zero exit.
             capture_output: Whether to capture stdout/stderr.
-            extra_env: Additional environment variables for the command.
             
         Returns:
             CompletedProcess instance with command results.
@@ -80,11 +71,10 @@ class InstallationStrategy(ABC):
             subprocess.CalledProcessError: If check=True and command fails.
         """
         cmd = [sys.executable, "-m", "pip"] + args
-        env = os.environ.copy()
-        env.update(self._env_overrides)
-        if extra_env:
-            env.update(extra_env)
-        return subprocess.run(cmd, check=check, capture_output=capture_output, env=env)
+        run_env = None
+        if env is not None:
+            run_env = {**os.environ, **env}
+        return subprocess.run(cmd, check=check, capture_output=capture_output, env=run_env)
 
     def _is_package_installed(self, package_name: str, min_version: Optional[str] = None) -> bool:
         """Check if a package is installed with optional version check.
@@ -118,6 +108,55 @@ class InstallationStrategy(ABC):
         except Exception:
             return False
 
+    def _gpu_build_env(self) -> dict:
+        """Create an environment for GPU-accelerated builds.
+
+        Detects the active CUDA device capability via torch if available and
+        sets TORCH_CUDA_ARCH_LIST accordingly. Also enables parallel builds
+        and ninja to speed up compilation on Kaggle GPUs.
+
+        Returns:
+            A dictionary of environment variables to pass to subprocesses.
+        """
+        env: dict = {
+            "FORCE_CUDA": "1",
+            "USE_NINJA": "1",
+            "MAX_JOBS": str(os.cpu_count() or 4),
+            # Build isolation can slow down and pull extra wheels; we aim to
+            # build against the runtime torch.
+            "PIP_NO_BUILD_ISOLATION": "0",
+        }
+
+        arch = None
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                # Collect unique compute capabilities across GPUs
+                caps = set()
+                for i in range(torch.cuda.device_count()):
+                    major, minor = torch.cuda.get_device_capability(i)
+                    caps.add(f"{major}.{minor}")
+                # Sort and join, e.g., "7.5;8.0"
+                arch = ";".join(sorted(caps))
+        except Exception:
+            arch = None
+
+        # Default to T4 capability if detection failed
+        if not arch:
+            arch = "7.5"
+
+        env["TORCH_CUDA_ARCH_LIST"] = arch
+        # Ensure only detected GPUs are visible for builds
+        try:
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                visible = ",".join(str(i) for i in range(torch.cuda.device_count()))
+                env["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", visible)
+        except Exception:
+            pass
+        return env
+
 
 class KaggleInstallationStrategy(InstallationStrategy):
     """Installation strategy optimized for Kaggle environment.
@@ -135,19 +174,6 @@ class KaggleInstallationStrategy(InstallationStrategy):
         Args:
             verbose: Whether to print progress messages.
         """
-        cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0,1")
-        torch_arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", "7.5")
-        max_jobs = str(max(os.cpu_count() or 4, 4))
-
-        super().__init__(
-            env_overrides={
-                "CUDA_VISIBLE_DEVICES": cuda_devices,
-                "NVIDIA_VISIBLE_DEVICES": cuda_devices,
-                "TORCH_CUDA_ARCH_LIST": torch_arch_list,
-                "FORCE_CUDA": "1",
-                "MAX_JOBS": max_jobs,
-            }
-        )
         self.verbose = verbose
 
     def _log(self, message: str) -> None:
@@ -193,10 +219,9 @@ class KaggleInstallationStrategy(InstallationStrategy):
         for pkg_name in packages_to_install:
             try:
                 self._log(f"Installing {package_specs[pkg_name]}...")
-                result = self._run_pip_command(
-                    ["install", "--upgrade", "--use-feature=in-tree-build", package_specs[pkg_name]],
-                    capture_output=True,
-                    extra_env={"CUDA_HOME": "/usr/local/cuda"}
+                self._run_pip_command(
+                    ["install", "--upgrade", package_specs[pkg_name]],
+                    capture_output=True
                 )
                 self._log(f"✓ {pkg_name} installed successfully")
             except subprocess.CalledProcessError as e:
@@ -218,6 +243,7 @@ class KaggleInstallationStrategy(InstallationStrategy):
                 self._log("Building mamba-ssm from source (GPU-accelerated)...")
                 # Build from source for environment-specific optimization
                 # GPU will be used automatically during CUDA compilation
+                build_env = self._gpu_build_env()
                 result = self._run_pip_command(
                     [
                         "install",
@@ -225,7 +251,8 @@ class KaggleInstallationStrategy(InstallationStrategy):
                         "--no-build-isolation",
                         "git+https://github.com/state-spaces/mamba.git",
                     ],
-                    capture_output=False
+                    capture_output=False,
+                    env=build_env,
                 )
                 self._log("✓ mamba-ssm built and installed successfully")
             except subprocess.CalledProcessError as e:
@@ -237,9 +264,16 @@ class KaggleInstallationStrategy(InstallationStrategy):
         else:
             try:
                 self._log("Installing causal-conv1d...")
+                build_env = self._gpu_build_env()
                 result = self._run_pip_command(
-                    ["install", "causal-conv1d>=1.5.2"],
-                    capture_output=False
+                    [
+                        "install",
+                        "--upgrade",
+                        "--no-build-isolation",
+                        "causal-conv1d>=1.5.2",
+                    ],
+                    capture_output=False,
+                    env=build_env,
                 )
                 self._log("✓ causal-conv1d installed successfully")
             except subprocess.CalledProcessError as e:
@@ -309,7 +343,6 @@ class LocalInstallationStrategy(InstallationStrategy):
         Args:
             verbose: Whether to print progress messages.
         """
-        super().__init__()
         self.verbose = verbose
 
     def _log(self, message: str) -> None:
