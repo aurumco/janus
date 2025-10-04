@@ -27,6 +27,9 @@ def get_root() -> str:
 
 def ensure_repository() -> str:
     """Clone or update repository if needed.
+    
+    Always pulls latest code from GitHub on each run to ensure
+    code changes are reflected, while preserving installed packages.
 
     Returns:
         Path to repository root.
@@ -46,15 +49,19 @@ def ensure_repository() -> str:
                 ["git", "clone", "--depth", "1", "--branch", REPO_BRANCH, REPO_URL, work_root],
                 check=True
             )
+            print(f"[setup] Repository cloned successfully")
         except Exception as e:
             print(f"[error] Git clone failed: {e}")
             print("[hint] Enable Internet in Kaggle (Settings > Internet)")
             raise
     else:
+        # Always update to latest code on each run
         try:
-            print(f"[setup] Updating repository to latest {REPO_BRANCH}")
-            subprocess.run(["git", "-C", work_root, "fetch", "--all", "--quiet"], check=True)
+            print(f"[setup] Pulling latest code from {REPO_BRANCH}...")
+            subprocess.run(["git", "-C", work_root, "fetch", "--all"], check=True)
             subprocess.run(["git", "-C", work_root, "reset", "--hard", f"origin/{REPO_BRANCH}"], check=True)
+            subprocess.run(["git", "-C", work_root, "clean", "-fd"], check=True)
+            print("[setup] ✓ Code updated to latest version")
         except Exception as e:
             print(f"[warn] Repository update failed: {e}. Using existing files.")
 
@@ -63,9 +70,6 @@ def ensure_repository() -> str:
 
 def install_requirements(repo_root: str) -> None:
     """Install required packages using Strategy Pattern.
-
-    This function uses the InstallationContext with KaggleInstallationStrategy
-    to handle package installation in a clean, maintainable way.
 
     Args:
         repo_root: Path to repository root.
@@ -76,7 +80,6 @@ def install_requirements(repo_root: str) -> None:
         print("[warn] requirements.txt not found, skipping installation")
         return
 
-    # Add src to path to import our installation strategies
     sys.path.insert(0, str(Path(repo_root) / "src"))
     
     try:
@@ -85,35 +88,31 @@ def install_requirements(repo_root: str) -> None:
             InstallationContext,
         )
         
-        # Create installation context with Kaggle strategy
         strategy = KaggleInstallationStrategy(verbose=True)
         context = InstallationContext(strategy)
-        
-        # Execute complete installation process
         context.install_all(requirements_path=req_path)
         
     except ImportError as e:
         print(f"[error] Failed to import installation strategies: {e}")
-        print("[info] Falling back to basic installation...")
         _fallback_install(req_path)
     except Exception as e:
         print(f"[warn] Installation error: {e}")
 
 
 def _fallback_install(req_path: Path) -> None:
-    """Fallback installation method if Strategy Pattern import fails.
+    """Fallback installation if Strategy Pattern unavailable.
     
     Args:
         req_path: Path to requirements.txt file.
     """
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_path), "--quiet"],
+            [sys.executable, "-m", "pip", "install", "-r", str(req_path)],
             check=True
         )
-        print("[setup] Requirements installed successfully (fallback method)")
+        print("[setup] Requirements installed successfully")
     except subprocess.CalledProcessError as e:
-        print(f"[warn] Fallback installation failed: {e}")
+        print(f"[warn] Installation failed: {e}")
 
 
 def validate_dataset() -> None:
@@ -162,34 +161,12 @@ def main() -> None:
     print("[run] Starting training...")
     print("="*70 + "\n")
 
-    # Verify mamba-ssm is accessible before starting training
+    # Run training in a fresh subprocess
+    cmd = [sys.executable, "-u", "train.py"]
     try:
-        import mamba_ssm
-        print(f"[info] mamba-ssm {mamba_ssm.__version__} is available")
-    except ImportError:
-        print("[error] mamba-ssm not accessible in current environment")
-        print("[info] Attempting to install mamba-ssm directly...")
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "mamba-ssm>=2.2.5", "causal-conv1d>=1.5.2"],
-                check=True
-            )
-            print("[info] mamba-ssm installed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"[error] Failed to install mamba-ssm: {e}")
-            raise
-
-    # Run training in a fresh process to ensure newly installed packages are imported cleanly.
-    # This prevents stale modules (e.g., old scikit-learn) from lingering in sys.modules.
-    cmd = [
-        sys.executable,
-        "-u",
-        "train.py",
-    ]
-    try:
-        result = subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"[error] Training subprocess failed with return code {e.returncode}")
+        print(f"[error] Training failed with return code {e.returncode}")
         raise
 
     print("\n" + "="*70)

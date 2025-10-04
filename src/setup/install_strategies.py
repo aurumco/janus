@@ -174,29 +174,42 @@ class KaggleInstallationStrategy(InstallationStrategy):
                 self._log(f"Warning: Failed to install {pkg_name}: {e}")
 
     def install_ml_packages(self) -> None:
-        """Install ML-specific packages like mamba-ssm."""
+        """Install ML-specific packages like mamba-ssm.
+        
+        Builds mamba-ssm from source using GPU for compilation.
+        This ensures compatibility with the specific environment.
+        """
         self._log("Checking ML-specific packages...")
         
-        ml_packages = [
-            ("mamba-ssm", "2.2.5"),
-            ("causal-conv1d", "1.5.2"),
-        ]
-        
-        for pkg_name, min_version in ml_packages:
-            if self._is_package_installed(pkg_name, min_version):
-                self._log(f"✓ {pkg_name} already installed")
-                continue
-            
+        # Check if mamba-ssm is already installed
+        if self._is_package_installed("mamba-ssm"):
+            self._log("✓ mamba-ssm already installed")
+        else:
             try:
-                self._log(f"Installing {pkg_name}>={min_version}...")
-                # Don't use --no-cache-dir to avoid hash mismatch errors
+                self._log("Building mamba-ssm from source (GPU-accelerated)...")
+                # Build from source for environment-specific optimization
+                # GPU will be used automatically during CUDA compilation
                 result = self._run_pip_command(
-                    ["install", "--upgrade", f"{pkg_name}>={min_version}"],
+                    ["install", "git+https://github.com/state-spaces/mamba.git"],
                     capture_output=False
                 )
-                self._log(f"✓ {pkg_name} installed successfully")
+                self._log("✓ mamba-ssm built and installed successfully")
             except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install {pkg_name}: {e}")
+                self._log(f"Warning: Failed to build mamba-ssm: {e}")
+        
+        # Check causal-conv1d
+        if self._is_package_installed("causal-conv1d"):
+            self._log("✓ causal-conv1d already installed")
+        else:
+            try:
+                self._log("Installing causal-conv1d...")
+                result = self._run_pip_command(
+                    ["install", "causal-conv1d>=1.5.2"],
+                    capture_output=False
+                )
+                self._log("✓ causal-conv1d installed successfully")
+            except subprocess.CalledProcessError as e:
+                self._log(f"Warning: Failed to install causal-conv1d: {e}")
 
     def install_from_requirements(self, requirements_path: Path) -> None:
         """Install remaining packages from requirements.txt.
@@ -210,10 +223,9 @@ class KaggleInstallationStrategy(InstallationStrategy):
 
         self._log("Installing remaining packages from requirements.txt...")
         
-        # Packages to skip (already installed or handled separately)
+        # Packages to skip (already handled in install_core_packages and install_ml_packages)
         skip_packages = {
-            "torch", "mamba-ssm", "causal-conv1d", "modular",
-            "numpy", "scipy", "pandas", "scikit-learn"
+            "torch", "numpy", "scipy", "pandas", "scikit-learn"
         }
         
         # Create filtered requirements file
@@ -222,6 +234,10 @@ class KaggleInstallationStrategy(InstallationStrategy):
             for line in rf:
                 pkg = line.strip()
                 if not pkg or pkg.startswith("#"):
+                    continue
+                
+                # Skip git+ URLs (mamba-ssm) - handled in install_ml_packages
+                if pkg.startswith("git+"):
                     continue
                 
                 # Extract package name (handle various formats)
