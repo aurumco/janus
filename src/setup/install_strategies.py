@@ -159,9 +159,24 @@ class KaggleInstallationStrategy(InstallationStrategy):
         for pkg in ml_packages:
             try:
                 self._log(f"Installing {pkg}...")
-                self._run_pip_command(
-                    ["install", "--upgrade", "--no-cache-dir", pkg]
+                result = self._run_pip_command(
+                    ["install", "--upgrade", "--no-cache-dir", pkg],
+                    capture_output=False  # Show output for debugging
                 )
+                
+                # Verify installation
+                pkg_name = pkg.split(">=")[0].split("==")[0].strip()
+                verify_result = self._run_pip_command(
+                    ["show", pkg_name],
+                    check=False,
+                    capture_output=True
+                )
+                
+                if verify_result.returncode == 0:
+                    self._log(f"✓ {pkg_name} installed successfully")
+                else:
+                    self._log(f"✗ {pkg_name} installation verification failed")
+                    
             except subprocess.CalledProcessError as e:
                 self._log(f"Warning: Failed to install {pkg}: {e}")
 

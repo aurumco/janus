@@ -159,8 +159,25 @@ def main() -> None:
     sys.path.insert(0, str(repo_root))
 
     print("\n" + "="*70)
-    print("[run] Starting training (fresh Python subprocess)...")
+    print("[run] Starting training...")
     print("="*70 + "\n")
+
+    # Verify mamba-ssm is accessible before starting training
+    try:
+        import mamba_ssm
+        print(f"[info] mamba-ssm {mamba_ssm.__version__} is available")
+    except ImportError:
+        print("[error] mamba-ssm not accessible in current environment")
+        print("[info] Attempting to install mamba-ssm directly...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "mamba-ssm>=2.2.5", "causal-conv1d>=1.5.2"],
+                check=True
+            )
+            print("[info] mamba-ssm installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"[error] Failed to install mamba-ssm: {e}")
+            raise
 
     # Run training in a fresh process to ensure newly installed packages are imported cleanly.
     # This prevents stale modules (e.g., old scikit-learn) from lingering in sys.modules.
