@@ -78,8 +78,8 @@ def install_requirements(repo_root: str) -> None:
                 pkg = line.strip()
                 if not pkg or pkg.startswith("#"):
                     continue
-                pkg_name = pkg.split("[")[0].split("==")[0].split(">=")[0].strip().lower()
-                if pkg_name in ["torch", "mamba-ssm", "modular"]:
+                pkg_name = pkg.split("[")[0].split("==")[0].split(">=")[0].split("<")[0].strip().lower()
+                if pkg_name in ["torch", "mamba-ssm", "modular", "numpy", "scipy", "pandas", "scikit-learn"]:
                     continue
                 wf.write(line)
 
