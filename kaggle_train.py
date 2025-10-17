@@ -183,8 +183,10 @@ def main() -> None:
         lib_path = os.path.join(conda_prefix, "lib")
         old_ld = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = f"{lib_path}:{old_ld}" if old_ld else lib_path
-    # Encourage CUDA builds if needed
     env.setdefault("FORCE_CUDA", "1")
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    env.setdefault("ABSL_LOG", "0")
+    env.setdefault("GLOG_minloglevel", "3")
     try:
         result = subprocess.run(cmd, check=True, env=env)
     except subprocess.CalledProcessError as e:

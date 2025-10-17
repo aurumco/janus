@@ -93,12 +93,10 @@ class InstallationStrategy(ABC):
                 return False
             
             if min_version:
-                # Extract version from pip show output
                 output = result.stdout.decode("utf-8")
                 for line in output.split("\n"):
                     if line.startswith("Version:"):
                         installed_version = line.split(":")[1].strip()
-                        # Simple version comparison (works for most cases)
                         from packaging import version
                         return version.parse(installed_version) >= version.parse(min_version)
             return True
@@ -145,11 +143,9 @@ class KaggleInstallationStrategy(InstallationStrategy):
 
         self._log("Installing packages from requirements.txt...")
 
-        # Use GPU-friendly environment variables to speed up native builds
         gpu_env = os.environ.copy()
         gpu_env.setdefault("FORCE_CUDA", "1")
         gpu_env.setdefault("MAX_JOBS", "4")
-        # Ensure dynamic libraries are discoverable during builds
         conda_prefix = gpu_env.get("CONDA_PREFIX")
         if conda_prefix:
             lib_path = os.path.join(conda_prefix, "lib")
@@ -157,7 +153,6 @@ class KaggleInstallationStrategy(InstallationStrategy):
             gpu_env["LD_LIBRARY_PATH"] = f"{lib_path}:{old_ld}" if old_ld else lib_path
 
         try:
-            # Include PyTorch CUDA 12.1 wheels index to resolve torch==2.4.0+cu121
             self._run_pip_command(
                 [
                     "install",

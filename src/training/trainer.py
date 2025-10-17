@@ -6,7 +6,11 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler, autocast
+try:
+    # Preferred modern API (Torch >= 2.5 adds device_type argument)
+    from torch.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
+except Exception:  # Fallback for older 2.x where torch.amp may be limited
+    from torch.cuda.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
@@ -53,8 +57,16 @@ class Trainer:
         self.criterion = criterion
         self.device = device
         self.scheduler = scheduler
-        self.use_amp = use_amp
-        self.scaler = GradScaler(device_type="cuda") if self.use_amp else None
+        # Initialize AMP scaler with compatibility across Torch versions
+        if self.use_amp:
+            try:
+                # Torch >= 2.5
+                self.scaler = AmpGradScaler(device_type="cuda")  # type: ignore[arg-type]
+            except TypeError:
+                # Torch 2.4 and earlier
+                self.scaler = AmpGradScaler()
+        else:
+            self.scaler = None
         self.gradient_clip = gradient_clip
         self.checkpoint_dir = checkpoint_dir
         self.early_stopping_patience = early_stopping_patience
@@ -104,7 +116,12 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.use_amp:
-                with autocast(device_type="cuda"):
+                # Use device-qualified autocast when supported; fallback otherwise
+                try:
+                    ctx = amp_autocast(device_type="cuda")
+                except TypeError:
+                    ctx = amp_autocast()
+                with ctx:
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, targets)
                 
@@ -203,6 +220,11 @@ class Trainer:
         print(f"Device: {self.device}")
         print(f"Mixed Precision: {self.use_amp}")
         print(f"Model parameters: {actual_model.get_num_parameters()}")
+
+        # Log parameter counts once to TensorBoard for visibility
+        if self.writer:
+            params = actual_model.get_num_parameters()
+            self.writer.add_text('model/parameters', f"total: {params['total']}, trainable: {params['trainable']}", 0)
 
         for epoch in range(1, epochs + 1):
             epoch_start_time = time.time()
