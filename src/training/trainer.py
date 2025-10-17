@@ -7,9 +7,8 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 try:
-    # Preferred modern API (Torch >= 2.5 adds device_type argument)
     from torch.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
-except Exception:  # Fallback for older 2.x where torch.amp may be limited
+except Exception:
     from torch.cuda.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
@@ -57,13 +56,11 @@ class Trainer:
         self.criterion = criterion
         self.device = device
         self.scheduler = scheduler
-        # Initialize AMP scaler with compatibility across Torch versions
+        self.use_amp = use_amp
         if self.use_amp:
             try:
-                # Torch >= 2.5
                 self.scaler = AmpGradScaler(device_type="cuda")  # type: ignore[arg-type]
             except TypeError:
-                # Torch 2.4 and earlier
                 self.scaler = AmpGradScaler()
         else:
             self.scaler = None
