@@ -164,10 +164,24 @@ class KaggleInstallationStrategy(InstallationStrategy):
         gpu_env = os.environ.copy()
         gpu_env.setdefault("FORCE_CUDA", "1")
         gpu_env.setdefault("MAX_JOBS", "4")
+        # Ensure dynamic libraries are discoverable during builds
+        conda_prefix = gpu_env.get("CONDA_PREFIX")
+        if conda_prefix:
+            lib_path = os.path.join(conda_prefix, "lib")
+            old_ld = gpu_env.get("LD_LIBRARY_PATH", "")
+            gpu_env["LD_LIBRARY_PATH"] = f"{lib_path}:{old_ld}" if old_ld else lib_path
 
         try:
+            # Include PyTorch CUDA 12.1 wheels index to resolve torch==2.4.0+cu121
             self._run_pip_command(
-                ["install", "--upgrade", "--requirement", str(requirements_path)],
+                [
+                    "install",
+                    "--upgrade",
+                    "--requirement",
+                    str(requirements_path),
+                    "--extra-index-url",
+                    "https://download.pytorch.org/whl/cu121",
+                ],
                 capture_output=False,
                 env=gpu_env,
             )

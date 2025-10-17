@@ -176,8 +176,17 @@ def main() -> None:
         "-u",
         "train.py",
     ]
+    # Ensure the subprocess sees the same activated environment (e.g., mamba/conda LD paths)
+    env = os.environ.copy()
+    conda_prefix = env.get("CONDA_PREFIX")
+    if conda_prefix:
+        lib_path = os.path.join(conda_prefix, "lib")
+        old_ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{lib_path}:{old_ld}" if old_ld else lib_path
+    # Encourage CUDA builds if needed
+    env.setdefault("FORCE_CUDA", "1")
     try:
-        result = subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"[error] Training subprocess failed with return code {e.returncode}")
         raise

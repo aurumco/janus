@@ -6,9 +6,14 @@ import torch.nn as nn
 try:
     from mamba_ssm import Mamba
     MAMBA_AVAILABLE = True
-except ImportError:
+    _MAMBA_IMPORT_ERROR: str | None = None
+except Exception as e:  # ImportError or lower-level load errors (e.g., CUDA libs)
     MAMBA_AVAILABLE = False
-    print("Warning: mamba-ssm not installed. Install with: pip install mamba-ssm")
+    _MAMBA_IMPORT_ERROR = str(e)
+    print(
+        "Warning: failed to import mamba-ssm. This can be due to it not being installed "
+        "or missing CUDA libraries at runtime. Original error: " + _MAMBA_IMPORT_ERROR
+    )
 
 
 class MambaBlock(nn.Module):
@@ -40,10 +45,12 @@ class MambaBlock(nn.Module):
         super().__init__()
 
         if not MAMBA_AVAILABLE:
-            raise ImportError(
-                "mamba-ssm is required but not installed. "
-                "Install with: pip install mamba-ssm"
+            hint = (
+                "mamba-ssm import failed. Ensure it is installed and CUDA runtime libraries are discoverable. "
+                "If using conda/mamba, propagate LD_LIBRARY_PATH to include $CONDA_PREFIX/lib. "
+                "Original error: " + (_MAMBA_IMPORT_ERROR or "unknown")
             )
+            raise ImportError(hint)
 
         self.mamba = Mamba(
             d_model=d_model,
