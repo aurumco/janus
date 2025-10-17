@@ -5,12 +5,12 @@ across different environments (Kaggle, local, etc.) with clean separation
 of concerns and extensibility.
 """
 
+import os
 import subprocess
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Optional
-import os
 
 
 class InstallationStrategy(ABC):
@@ -71,10 +71,7 @@ class InstallationStrategy(ABC):
             subprocess.CalledProcessError: If check=True and command fails.
         """
         cmd = [sys.executable, "-m", "pip"] + args
-        run_env = None
-        if env is not None:
-            run_env = {**os.environ, **env}
-        return subprocess.run(cmd, check=check, capture_output=capture_output, env=run_env)
+        return subprocess.run(cmd, check=check, capture_output=capture_output, env=env)
 
     def _is_package_installed(self, package_name: str, min_version: Optional[str] = None) -> bool:
         """Check if a package is installed with optional version check.
@@ -107,55 +104,6 @@ class InstallationStrategy(ABC):
             return True
         except Exception:
             return False
-
-    def _gpu_build_env(self) -> dict:
-        """Create an environment for GPU-accelerated builds.
-
-        Detects the active CUDA device capability via torch if available and
-        sets TORCH_CUDA_ARCH_LIST accordingly. Also enables parallel builds
-        and ninja to speed up compilation on Kaggle GPUs.
-
-        Returns:
-            A dictionary of environment variables to pass to subprocesses.
-        """
-        env: dict = {
-            "FORCE_CUDA": "1",
-            "USE_NINJA": "1",
-            "MAX_JOBS": str(os.cpu_count() or 4),
-            # Build isolation can slow down and pull extra wheels; we aim to
-            # build against the runtime torch.
-            "PIP_NO_BUILD_ISOLATION": "0",
-        }
-
-        arch = None
-        try:
-            import torch  # type: ignore
-
-            if torch.cuda.is_available():
-                # Collect unique compute capabilities across GPUs
-                caps = set()
-                for i in range(torch.cuda.device_count()):
-                    major, minor = torch.cuda.get_device_capability(i)
-                    caps.add(f"{major}.{minor}")
-                # Sort and join, e.g., "7.5;8.0"
-                arch = ";".join(sorted(caps))
-        except Exception:
-            arch = None
-
-        # Default to T4 capability if detection failed
-        if not arch:
-            arch = "7.5"
-
-        env["TORCH_CUDA_ARCH_LIST"] = arch
-        # Ensure only detected GPUs are visible for builds
-        try:
-            import torch  # type: ignore
-            if torch.cuda.is_available():
-                visible = ",".join(str(i) for i in range(torch.cuda.device_count()))
-                env["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", visible)
-        except Exception:
-            pass
-        return env
 
 
 class KaggleInstallationStrategy(InstallationStrategy):
@@ -229,55 +177,38 @@ class KaggleInstallationStrategy(InstallationStrategy):
 
     def install_ml_packages(self) -> None:
         """Install ML-specific packages like mamba-ssm.
-        
-        Builds mamba-ssm from source using GPU for compilation.
-        This ensures compatibility with the specific environment.
+
+        Uses GPU-friendly build flags where applicable.
         """
         self._log("Checking ML-specific packages...")
-        
-        # Check if mamba-ssm is already installed
-        if self._is_package_installed("mamba-ssm"):
-            self._log("✓ mamba-ssm already installed")
-        else:
+
+        ml_packages = [
+            ("mamba-ssm", "2.2.2"),
+            ("causal-conv1d", "1.5.2"),
+        ]
+
+        # Prepare environment for GPU builds (when building from source)
+        gpu_env = os.environ.copy()
+        gpu_env.setdefault("FORCE_CUDA", "1")
+        gpu_env.setdefault("MAX_JOBS", "4")  # Parallel compile jobs
+
+        for pkg_name, min_version in ml_packages:
+            if self._is_package_installed(pkg_name, min_version if pkg_name != "mamba-ssm" else "2.2.2"):
+                self._log(f"✓ {pkg_name} already installed")
+                continue
+
             try:
-                self._log("Building mamba-ssm from source (GPU-accelerated)...")
-                # Build from source for environment-specific optimization
-                # GPU will be used automatically during CUDA compilation
-                build_env = self._gpu_build_env()
-                result = self._run_pip_command(
-                    [
-                        "install",
-                        "--upgrade",
-                        "--no-build-isolation",
-                        "git+https://github.com/state-spaces/mamba.git",
-                    ],
+                spec = f"{pkg_name}=={min_version}" if pkg_name == "mamba-ssm" else f"{pkg_name}>={min_version}"
+                self._log(f"Installing {spec}...")
+                # Avoid --no-cache-dir to reduce hash issues and speed up
+                self._run_pip_command(
+                    ["install", "--upgrade", spec],
                     capture_output=False,
-                    env=build_env,
+                    env=gpu_env,
                 )
-                self._log("✓ mamba-ssm built and installed successfully")
+                self._log(f"✓ {pkg_name} installed successfully")
             except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to build mamba-ssm: {e}")
-        
-        # Check causal-conv1d
-        if self._is_package_installed("causal-conv1d"):
-            self._log("✓ causal-conv1d already installed")
-        else:
-            try:
-                self._log("Installing causal-conv1d...")
-                build_env = self._gpu_build_env()
-                result = self._run_pip_command(
-                    [
-                        "install",
-                        "--upgrade",
-                        "--no-build-isolation",
-                        "causal-conv1d>=1.5.2",
-                    ],
-                    capture_output=False,
-                    env=build_env,
-                )
-                self._log("✓ causal-conv1d installed successfully")
-            except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install causal-conv1d: {e}")
+                self._log(f"Warning: Failed to install {pkg_name}: {e}")
 
     def install_from_requirements(self, requirements_path: Path) -> None:
         """Install remaining packages from requirements.txt.
@@ -291,9 +222,10 @@ class KaggleInstallationStrategy(InstallationStrategy):
 
         self._log("Installing remaining packages from requirements.txt...")
         
-        # Packages to skip (already handled in install_core_packages and install_ml_packages)
+        # Packages to skip (already installed or handled separately)
         skip_packages = {
-            "torch", "numpy", "scipy", "pandas", "scikit-learn"
+            "torch", "mamba-ssm", "causal-conv1d", "modular",
+            "numpy", "scipy", "pandas", "scikit-learn"
         }
         
         # Create filtered requirements file
@@ -302,10 +234,6 @@ class KaggleInstallationStrategy(InstallationStrategy):
             for line in rf:
                 pkg = line.strip()
                 if not pkg or pkg.startswith("#"):
-                    continue
-                
-                # Skip git+ URLs (mamba-ssm) - handled in install_ml_packages
-                if pkg.startswith("git+"):
                     continue
                 
                 # Extract package name (handle various formats)

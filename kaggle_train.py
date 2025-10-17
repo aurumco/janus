@@ -71,6 +71,9 @@ def ensure_repository() -> str:
 def install_requirements(repo_root: str) -> None:
     """Install required packages using Strategy Pattern.
 
+    This function uses the InstallationContext with KaggleInstallationStrategy
+    to handle package installation in a clean, maintainable way.
+
     Args:
         repo_root: Path to repository root.
     """
@@ -80,6 +83,7 @@ def install_requirements(repo_root: str) -> None:
         print("[warn] requirements.txt not found, skipping installation")
         return
 
+    # Add src to path to import our installation strategies
     sys.path.insert(0, str(Path(repo_root) / "src"))
     
     try:
@@ -88,31 +92,35 @@ def install_requirements(repo_root: str) -> None:
             InstallationContext,
         )
         
+        # Create installation context with Kaggle strategy
         strategy = KaggleInstallationStrategy(verbose=True)
         context = InstallationContext(strategy)
+        
+        # Execute complete installation process
         context.install_all(requirements_path=req_path)
         
     except ImportError as e:
         print(f"[error] Failed to import installation strategies: {e}")
+        print("[info] Falling back to basic installation...")
         _fallback_install(req_path)
     except Exception as e:
         print(f"[warn] Installation error: {e}")
 
 
 def _fallback_install(req_path: Path) -> None:
-    """Fallback installation if Strategy Pattern unavailable.
+    """Fallback installation method if Strategy Pattern import fails.
     
     Args:
         req_path: Path to requirements.txt file.
     """
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_path)],
+            [sys.executable, "-m", "pip", "install", "-r", str(req_path), "--quiet"],
             check=True
         )
-        print("[setup] Requirements installed successfully")
+        print("[setup] Requirements installed successfully (fallback method)")
     except subprocess.CalledProcessError as e:
-        print(f"[warn] Installation failed: {e}")
+        print(f"[warn] Fallback installation failed: {e}")
 
 
 def validate_dataset() -> None:
@@ -161,12 +169,17 @@ def main() -> None:
     print("[run] Starting training...")
     print("="*70 + "\n")
 
-    # Run training in a fresh subprocess
-    cmd = [sys.executable, "-u", "train.py"]
+    # Run training in a fresh process to ensure newly installed packages are imported cleanly.
+    # This prevents stale modules (e.g., old scikit-learn) from lingering in sys.modules.
+    cmd = [
+        sys.executable,
+        "-u",
+        "train.py",
+    ]
     try:
-        subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"[error] Training failed with return code {e.returncode}")
+        print(f"[error] Training subprocess failed with return code {e.returncode}")
         raise
 
     print("\n" + "="*70)
