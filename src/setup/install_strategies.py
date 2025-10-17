@@ -134,81 +134,19 @@ class KaggleInstallationStrategy(InstallationStrategy):
             print(f"[setup] {message}")
 
     def install_core_packages(self) -> None:
-        """Install core packages with Kaggle-specific handling."""
-        self._log("Checking core packages...")
-        
-        core_packages = [
-            ("numpy", "1.22"),
-            ("scipy", "1.7.0"),
-            ("pandas", "2.2.2"),
-            ("scikit-learn", "1.5.2"),
-        ]
-        
-        packages_to_install = []
-        for pkg_name, min_version in core_packages:
-            if not self._is_package_installed(pkg_name, min_version):
-                self._log(f"{pkg_name} needs installation/upgrade")
-                packages_to_install.append(pkg_name)
-            else:
-                self._log(f"✓ {pkg_name} already installed with compatible version")
-        
-        if not packages_to_install:
-            self._log("All core packages are up to date")
-            return
-        
-        # Install only packages that need it
-        package_specs = {
-            "numpy": "numpy>=1.22,<2.1",
-            "scipy": "scipy>=1.7.0,<1.14.0",
-            "pandas": "pandas>=2.2.2,<2.3",
-            "scikit-learn": "scikit-learn>=1.5.2,<2.0",
-        }
-        
-        for pkg_name in packages_to_install:
-            try:
-                self._log(f"Installing {package_specs[pkg_name]}...")
-                self._run_pip_command(
-                    ["install", "--upgrade", package_specs[pkg_name]],
-                    capture_output=True
-                )
-                self._log(f"✓ {pkg_name} installed successfully")
-            except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install {pkg_name}: {e}")
+        """Install core packages required for Kaggle.
+
+        For Kaggle we rely entirely on requirements.txt installation,
+        so this step is intentionally a no-op.
+        """
+        self._log("Skipping core package installation (handled via requirements.txt)")
 
     def install_ml_packages(self) -> None:
-        """Install ML-specific packages like mamba-ssm.
+        """Install ML-specific packages.
 
-        Uses GPU-friendly build flags where applicable.
+        Also a no-op; handled by requirements.txt installation.
         """
-        self._log("Checking ML-specific packages...")
-
-        ml_packages = [
-            ("mamba-ssm", "2.2.2"),
-            ("causal-conv1d", "1.5.2"),
-        ]
-
-        # Prepare environment for GPU builds (when building from source)
-        gpu_env = os.environ.copy()
-        gpu_env.setdefault("FORCE_CUDA", "1")
-        gpu_env.setdefault("MAX_JOBS", "4")  # Parallel compile jobs
-
-        for pkg_name, min_version in ml_packages:
-            if self._is_package_installed(pkg_name, min_version if pkg_name != "mamba-ssm" else "2.2.2"):
-                self._log(f"✓ {pkg_name} already installed")
-                continue
-
-            try:
-                spec = f"{pkg_name}=={min_version}" if pkg_name == "mamba-ssm" else f"{pkg_name}>={min_version}"
-                self._log(f"Installing {spec}...")
-                # Avoid --no-cache-dir to reduce hash issues and speed up
-                self._run_pip_command(
-                    ["install", "--upgrade", spec],
-                    capture_output=False,
-                    env=gpu_env,
-                )
-                self._log(f"✓ {pkg_name} installed successfully")
-            except subprocess.CalledProcessError as e:
-                self._log(f"Warning: Failed to install {pkg_name}: {e}")
+        self._log("Skipping ML package installation (handled via requirements.txt)")
 
     def install_from_requirements(self, requirements_path: Path) -> None:
         """Install remaining packages from requirements.txt.
@@ -220,42 +158,22 @@ class KaggleInstallationStrategy(InstallationStrategy):
             self._log(f"Requirements file not found: {requirements_path}")
             return
 
-        self._log("Installing remaining packages from requirements.txt...")
-        
-        # Packages to skip (already installed or handled separately)
-        skip_packages = {
-            "torch", "mamba-ssm", "causal-conv1d", "modular",
-            "numpy", "scipy", "pandas", "scikit-learn"
-        }
-        
-        # Create filtered requirements file
-        filtered_path = Path("/tmp/requirements_filtered.txt")
-        with open(requirements_path, "r") as rf, open(filtered_path, "w") as wf:
-            for line in rf:
-                pkg = line.strip()
-                if not pkg or pkg.startswith("#"):
-                    continue
-                
-                # Extract package name (handle various formats)
-                pkg_name = (
-                    pkg.split("[")[0]
-                    .split("==")[0]
-                    .split(">=")[0]
-                    .split("<")[0]
-                    .strip()
-                    .lower()
-                )
-                
-                if pkg_name not in skip_packages:
-                    wf.write(line)
+        self._log("Installing packages from requirements.txt...")
+
+        # Use GPU-friendly environment variables to speed up native builds
+        gpu_env = os.environ.copy()
+        gpu_env.setdefault("FORCE_CUDA", "1")
+        gpu_env.setdefault("MAX_JOBS", "4")
 
         try:
             self._run_pip_command(
-                ["install", "-r", str(filtered_path), "--quiet"]
+                ["install", "--upgrade", "--requirement", str(requirements_path)],
+                capture_output=False,
+                env=gpu_env,
             )
             self._log("Requirements installed successfully")
         except subprocess.CalledProcessError as e:
-            self._log(f"Warning: Some requirements failed to install: {e}")
+            self._log(f"Warning: Failed to install requirements: {e}")
 
 
 class LocalInstallationStrategy(InstallationStrategy):
