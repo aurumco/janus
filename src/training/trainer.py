@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
@@ -54,7 +54,7 @@ class Trainer:
         self.device = device
         self.scheduler = scheduler
         self.use_amp = use_amp
-        self.scaler = GradScaler() if self.use_amp else None
+        self.scaler = GradScaler(device_type="cuda") if self.use_amp else None
         self.gradient_clip = gradient_clip
         self.checkpoint_dir = checkpoint_dir
         self.early_stopping_patience = early_stopping_patience
@@ -104,7 +104,7 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.use_amp:
-                with autocast():
+                with autocast(device_type="cuda"):
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, targets)
                 
@@ -138,10 +138,7 @@ class Trainer:
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
-            pbar.set_postfix({
-                'loss': total_loss / (batch_idx + 1),
-                'acc': 100. * correct / total
-            })
+            pbar.set_postfix(loss=total_loss / (batch_idx + 1), acc=100.0 * correct / total)
 
         avg_loss = total_loss / len(train_loader)
         accuracy = 100. * correct / total
@@ -176,10 +173,7 @@ class Trainer:
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
 
-                pbar.set_postfix({
-                    'loss': total_loss / (batch_idx + 1),
-                    'acc': 100. * correct / total
-                })
+                pbar.set_postfix(loss=total_loss / (batch_idx + 1), acc=100.0 * correct / total)
 
         avg_loss = total_loss / len(val_loader)
         accuracy = 100. * correct / total
@@ -227,7 +221,7 @@ class Trainer:
             self.history['val_acc'].append(val_metrics['accuracy'])
             self.history['learning_rate'].append(current_lr)
 
-            if self.writer and epoch % log_interval == 0:
+            if self.writer:
                 self.writer.add_scalar('Loss/train', train_metrics['loss'], epoch)
                 self.writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
                 self.writer.add_scalar('Accuracy/train', train_metrics['accuracy'], epoch)

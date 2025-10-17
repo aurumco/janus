@@ -68,6 +68,12 @@ def main() -> None:
         use_cuda=config.get('device.use_cuda', True),
         device_id=config.get('device.device_id', 0)
     )
+    if device.type == 'cuda':
+        try:
+            _ = torch.tensor(0.0, device=device)
+            torch.cuda.synchronize()
+        except Exception:
+            pass
 
     data_path = args.data_path or config.get('paths.data_path')
     output_dir = Path(args.output_dir or config.get('paths.output_dir'))
@@ -212,6 +218,36 @@ def main() -> None:
         test_metrics['roc_curves'],
         results_dir / 'roc_curves.png'
     )
+
+    try:
+        export_dir = results_dir / 'exports'
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save state_dict
+        sd_path = export_dir / 'model_state_dict.pth'
+        torch.save((actual_model if 'actual_model' in locals() else model).state_dict(), sd_path)
+
+        # TorchScript (script)
+        example = torch.randn(1, config.get('data.input_window'), config.get('data.num_features')).to(device)
+        scripted = torch.jit.script(actual_model if 'actual_model' in locals() else model)
+        ts_path = export_dir / 'model_scripted.pt'
+        scripted.save(str(ts_path))
+
+        # ONNX export
+        onnx_path = export_dir / 'model.onnx'
+        (actual_model if 'actual_model' in locals() else model).eval()
+        torch.onnx.export(
+            (actual_model if 'actual_model' in locals() else model),
+            example,
+            str(onnx_path),
+            input_names=['input'],
+            output_names=['logits'],
+            dynamic_axes={'input': {0: 'batch', 1: 'seq'}, 'logits': {0: 'batch'}},
+            opset_version=17,
+        )
+        print(f"Exports saved: {export_dir}")
+    except Exception as e:
+        print(f"[warn] Export failed: {e}")
 
     print(f"\nAll results saved to: {results_dir}")
     print(f"Checkpoints saved to: {checkpoint_dir}")

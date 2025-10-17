@@ -1,9 +1,9 @@
 model:
   name: "MambaBTC"
-  d_model: 128
+  d_model: 256
   d_state: 16
   d_conv: 4
-  n_layers: 4
+  n_layers: 6
   dropout: 0.2
   num_classes: 5
 
