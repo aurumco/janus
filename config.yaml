@@ -1,10 +1,10 @@
 model:
   name: "MambaBTC"
-  d_model: 256
+  d_model: 128
   d_state: 16
   d_conv: 4
-  n_layers: 6
-  dropout: 0.2
+  n_layers: 4
+  dropout: 0.5
   num_classes: 5
 
 data:
@@ -47,7 +47,7 @@ training:
 loss:
   type: "cross_entropy"
   label_smoothing: 0.1
-  class_weights: null
+  class_weights: [7.6, 1.5, 0.3, 1.2, 8.4]
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
