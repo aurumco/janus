@@ -28,6 +28,12 @@ from src.training.losses import (
     AsymmetricMSELoss,
     SignWeightedMSELoss,
 )
+from src.training.multitask_losses import (
+    MultiTaskRegressionLoss,
+    AdaptiveMultiTaskLoss,
+)
+from src.models.mamba_multitask import MambaMultitaskRegressor
+from src.evaluation.multitask_evaluator import MultiTaskEvaluator
 from src.utils.helpers import get_device, save_model_architecture, set_seed
 
 
@@ -149,15 +155,30 @@ def main() -> None:
     print(f"Val batches: {len(data_loaders['val'])}")
     print(f"Test batches: {len(data_loaders['test'])}\n")
 
-    model = MambaRegressor(
-        input_dim=config.get('data.num_features'),
-        d_model=config.get('model.d_model'),
-        d_state=config.get('model.d_state'),
-        d_conv=config.get('model.d_conv'),
-        n_layers=config.get('model.n_layers'),
-        output_dim=config.get('model.num_classes', 1),
-        dropout=config.get('model.dropout'),
-    )
+    model_type = config.get('model.type', 'standard').lower()
+    
+    if model_type == 'multitask':
+        model = MambaMultitaskRegressor(
+            d_model=config.get('model.d_model'),
+            d_state=config.get('model.d_state'),
+            d_conv=config.get('model.d_conv'),
+            n_layers=config.get('model.n_layers'),
+            dropout=config.get('model.dropout'),
+            num_features=config.get('data.num_features'),
+            sequence_length=config.get('data.input_window'),
+        )
+        print(f"Using Multi-Task Mamba Regressor")
+    else:
+        model = MambaRegressor(
+            input_dim=config.get('data.num_features'),
+            d_model=config.get('model.d_model'),
+            d_state=config.get('model.d_state'),
+            d_conv=config.get('model.d_conv'),
+            n_layers=config.get('model.n_layers'),
+            output_dim=config.get('model.num_classes', 1),
+            dropout=config.get('model.dropout'),
+        )
+        print(f"Using Standard Mamba Regressor")
     
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
@@ -194,6 +215,22 @@ def main() -> None:
         penalty = config.get('loss.underestimate_penalty', 1.5)
         criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
         print(f"Using Asymmetric MSE Loss (penalty={penalty})")
+    elif loss_type == 'multitask':
+        base_loss = MultiTaskRegressionLoss(
+            direction_weight=config.get('loss.direction_weight', 2.0),
+            magnitude_weight=config.get('loss.magnitude_weight', 1.0),
+            confidence_weight=config.get('loss.confidence_weight', 0.5),
+            regression_weight=config.get('loss.regression_weight', 1.5),
+            focal_gamma=config.get('loss.focal_gamma', 2.0),
+        )
+        if config.get('loss.use_adaptive_weights', False):
+            criterion = AdaptiveMultiTaskLoss(base_loss)
+            print(f"Using Adaptive Multi-Task Loss (auto-weighted)")
+        else:
+            criterion = base_loss
+            print(f"Using Multi-Task Loss (dir={config.get('loss.direction_weight')}, " +
+                  f"mag={config.get('loss.magnitude_weight')}, " +
+                  f"conf={config.get('loss.confidence_weight')})")
     else:
         huber_delta = config.get('loss.huber_delta', 0.5)
         criterion = nn.HuberLoss(delta=huber_delta)
@@ -259,30 +296,46 @@ def main() -> None:
     if best_checkpoint.exists():
         trainer.load_checkpoint(str(best_checkpoint))
 
-    evaluator = ModelEvaluator(
-        model=model,
-        device=device,
-    )
-
-    print("\nEvaluating on test set...")
-    test_metrics = evaluator.evaluate(test_loader)
-
-    evaluator.print_metrics(test_metrics)
-    evaluator.save_metrics(test_metrics, results_dir / 'evaluation_metrics.txt')
+    if model_type == 'multitask':
+        evaluator = MultiTaskEvaluator(device=device)
+        print("\nEvaluating on test set...")
+        test_metrics = evaluator.evaluate(model, test_loader)
+        evaluator.print_metrics(test_metrics)
+    else:
+        evaluator = ModelEvaluator(model=model, device=device)
+        print("\nEvaluating on test set...")
+        test_metrics = evaluator.evaluate(test_loader)
+        evaluator.print_metrics(test_metrics)
+        evaluator.save_metrics(test_metrics, results_dir / 'evaluation_metrics.txt')
 
     print("Creating visualizations...")
     if config.get('evaluation.plot_predictions', True):
-        visualizer.plot_predictions(
-            test_metrics['y_true'],
-            test_metrics['y_pred'],
-            results_dir / 'predictions.png'
-        )
+        if model_type == 'multitask':
+            model.eval()
+            all_preds = []
+            all_targets = []
+            with torch.no_grad():
+                for inputs, targets in test_loader:
+                    inputs = inputs.to(device)
+                    outputs = model(inputs)
+                    preds = outputs['regression'].cpu().numpy()
+                    all_preds.append(preds)
+                    all_targets.append(targets.numpy())
+            
+            y_pred = np.concatenate(all_preds, axis=0).squeeze()
+            y_true = np.concatenate(all_targets, axis=0).squeeze()
+        else:
+            y_pred = test_metrics['y_pred']
+            y_true = test_metrics['y_true']
+        
+        visualizer.plot_predictions(y_true, y_pred, results_dir / 'predictions.png')
     
     if config.get('evaluation.plot_residuals', True):
-        visualizer.plot_residuals(
-            test_metrics['residuals'],
-            results_dir / 'residuals.png'
-        )
+        if model_type == 'multitask':
+            residuals = y_true - y_pred
+        else:
+            residuals = test_metrics['residuals']
+        visualizer.plot_residuals(residuals, results_dir / 'residuals.png')
 
     export_dir = results_dir / 'exports'
     export_dir.mkdir(parents=True, exist_ok=True)

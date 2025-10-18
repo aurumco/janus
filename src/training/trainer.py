@@ -117,7 +117,12 @@ class Trainer:
                     ctx = amp_autocast()
                 with ctx:
                     outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets)
+                    loss_output = self.criterion(outputs, targets)
+
+                    if isinstance(loss_output, dict):
+                        loss = loss_output['loss']
+                    else:
+                        loss = loss_output
                 
                 self.scaler.scale(loss).backward()
                 
@@ -132,7 +137,12 @@ class Trainer:
                 self.scaler.update()
             else:
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+                loss_output = self.criterion(outputs, targets)
+
+                if isinstance(loss_output, dict):
+                    loss = loss_output['loss']
+                else:
+                    loss = loss_output
                 
                 loss.backward()
                 
@@ -168,7 +178,12 @@ class Trainer:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+                loss_output = self.criterion(outputs, targets)
+
+                if isinstance(loss_output, dict):
+                    loss = loss_output['loss']
+                else:
+                    loss = loss_output
 
                 total_loss += loss.item()
 
