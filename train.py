@@ -127,8 +127,6 @@ def main() -> None:
         num_workers=config.get('data.num_workers'),
         shuffle_train=config.get('data.shuffle_train'),
         random_seed=config.get('seed', 42),
-        oversample_smote=config.get('data.oversample_smote', False),
-        smote_k_neighbors=config.get('data.smote_k_neighbors', 5),
     )
 
     print("Creating data loaders...")

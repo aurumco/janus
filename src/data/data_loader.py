@@ -5,7 +5,6 @@ from typing import Dict
 
 import pandas as pd
 from torch.utils.data import DataLoader
-from imblearn.over_sampling import SMOTE
 
 from .base_strategy import DataProcessingStrategy
 from .dataset import BitcoinTrendDataset
@@ -25,8 +24,6 @@ class DataLoaderFactory:
         num_workers: int = 4,
         shuffle_train: bool = True,
         random_seed: int = 42,
-        oversample_smote: bool = False,
-        smote_k_neighbors: int = 5,
     ) -> None:
         """Initialize data loader factory.
 
@@ -50,8 +47,6 @@ class DataLoaderFactory:
         self.num_workers = num_workers
         self.shuffle_train = shuffle_train
         self.random_seed = random_seed
-        self.oversample_smote = oversample_smote
-        self.smote_k_neighbors = smote_k_neighbors
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -81,15 +76,6 @@ class DataLoaderFactory:
         
         X_test = X[val_end:]
         y_test = y[val_end:]
-
-        if self.oversample_smote:
-            X_flat = X_train.reshape(X_train.shape[0], -1)
-            smote = SMOTE(random_state=self.random_seed, k_neighbors=self.smote_k_neighbors)
-            X_res_flat, y_res = smote.fit_resample(X_flat, y_train)
-            seq_len = X_train.shape[1]
-            feat_dim = X_train.shape[2]
-            X_train = X_res_flat.reshape(X_res_flat.shape[0], seq_len, feat_dim)
-            y_train = y_res
 
         train_dataset = BitcoinTrendDataset(X_train, y_train)
         val_dataset = BitcoinTrendDataset(X_val, y_val)
@@ -134,9 +120,11 @@ class DataLoaderFactory:
         data = pd.read_parquet(self.data_path)
         X, y = self.processing_strategy.process(data)
 
+        import numpy as np
         return {
             "total_samples": len(X),
             "sequence_length": X.shape[1],
             "num_features": X.shape[2],
-            "num_classes": len(set(y)),
+            "target_mean": float(np.mean(y)),
+            "target_std": float(np.std(y)),
         }

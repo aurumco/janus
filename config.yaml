@@ -4,7 +4,7 @@ model:
   d_state: 16
   d_conv: 4
   n_layers: 3
-  dropout: 0.3
+  dropout: 0.4
   num_classes: 1
 
 data:

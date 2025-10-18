@@ -221,7 +221,7 @@ class BacktestEngine:
         """Determine if position should be closed.
 
         Args:
-            current_signal: Current model prediction (0-4).
+            current_signal: Current model signal (-1: short, 0: neutral, 1: long).
             low: Period low price.
             high: Period high price.
 
@@ -239,13 +239,13 @@ class BacktestEngine:
         
         if self.config.close_on_trend_reversal:
             if self.current_position.side == PositionSide.LONG:
-                if current_signal in [0, 1]:
-                    return True, "Trend Reversal (Sell Signal)"
+                if current_signal == -1:
+                    return True, "Trend Reversal (Short Signal)"
             else:
-                if current_signal in [3, 4]:
-                    return True, "Trend Reversal (Buy Signal)"
+                if current_signal == 1:
+                    return True, "Trend Reversal (Long Signal)"
         
-        if self.config.close_on_neutral and current_signal == 2:
+        if self.config.close_on_neutral and current_signal == 0:
             return True, "Neutral Signal"
         
         return False, ""
@@ -254,18 +254,14 @@ class BacktestEngine:
         """Determine if a new position should be opened.
 
         Args:
-            signal: Model prediction (0-4).
+            signal: Model signal (-1: short, 0: neutral, 1: long).
 
         Returns:
             Position side to open, or None.
         """
-        if signal == 4 and self.config.allow_long:
+        if signal == 1 and self.config.allow_long:
             return PositionSide.LONG
-        elif signal == 3 and self.config.allow_long:
-            return PositionSide.LONG
-        elif signal == 0 and self.config.allow_short:
-            return PositionSide.SHORT
-        elif signal == 1 and self.config.allow_short:
+        elif signal == -1 and self.config.allow_short:
             return PositionSide.SHORT
         
         return None
