@@ -5,6 +5,8 @@ from typing import Dict
 
 import pandas as pd
 from torch.utils.data import DataLoader
+import numpy as np
+from imblearn.over_sampling import SMOTE
 
 from .base_strategy import DataProcessingStrategy
 from .dataset import BitcoinTrendDataset
@@ -17,13 +19,15 @@ class DataLoaderFactory:
         self,
         data_path: str,
         processing_strategy: DataProcessingStrategy,
-        train_ratio: float = 0.7,
-        val_ratio: float = 0.15,
-        test_ratio: float = 0.15,
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        test_ratio: float = 0.1,
         batch_size: int = 32,
         num_workers: int = 4,
         shuffle_train: bool = True,
         random_seed: int = 42,
+        oversample_smote: bool = False,
+        smote_k_neighbors: int = 5,
     ) -> None:
         """Initialize data loader factory.
 
@@ -47,6 +51,8 @@ class DataLoaderFactory:
         self.num_workers = num_workers
         self.shuffle_train = shuffle_train
         self.random_seed = random_seed
+        self.oversample_smote = oversample_smote
+        self.smote_k_neighbors = smote_k_neighbors
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -70,12 +76,21 @@ class DataLoaderFactory:
 
         X_train = X[:train_end]
         y_train = y[:train_end]
-        
+
         X_val = X[train_end:val_end]
         y_val = y[train_end:val_end]
         
         X_test = X[val_end:]
         y_test = y[val_end:]
+
+        if self.oversample_smote:
+            X_flat = X_train.reshape(X_train.shape[0], -1)
+            smote = SMOTE(random_state=self.random_seed, k_neighbors=self.smote_k_neighbors)
+            X_res_flat, y_res = smote.fit_resample(X_flat, y_train)
+            seq_len = X_train.shape[1]
+            feat_dim = X_train.shape[2]
+            X_train = X_res_flat.reshape(X_res_flat.shape[0], seq_len, feat_dim)
+            y_train = y_res
 
         train_dataset = BitcoinTrendDataset(X_train, y_train)
         val_dataset = BitcoinTrendDataset(X_val, y_val)

@@ -131,6 +131,12 @@ class KaggleInstallationStrategy(InstallationStrategy):
         if self.verbose:
             print(f"[setup] {message}")
 
+    def install_core_packages(self) -> None:
+        self._log("Skipping core package installation (handled via requirements.txt)")
+
+    def install_ml_packages(self) -> None:
+        self._log("Skipping ML package installation (handled via requirements.txt)")
+
     def install_from_requirements(self, requirements_path: Path) -> None:
         """Install remaining packages from requirements.txt.
         

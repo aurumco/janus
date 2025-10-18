@@ -113,7 +113,6 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.use_amp:
-                # Use device-qualified autocast when supported; fallback otherwise
                 try:
                     ctx = amp_autocast(device_type="cuda")
                 except TypeError:
