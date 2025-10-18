@@ -31,7 +31,8 @@ data:
   batch_size: 128
   num_workers: 4
   shuffle_train: true
-  oversample_smote: false
+  oversample_smote: true
+  smote_k_neighbors: 5
 
 training:
   epochs: 100
@@ -46,10 +47,8 @@ training:
   save_best_only: true
   
 loss:
-  type: "focal"
-  gamma: 2.0
-  label_smoothing: 0.0
-  class_weights: [7.6, 1.5, 0.3, 1.2, 8.4]
+  type: "cross_entropy"
+  label_smoothing: 0.1
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
