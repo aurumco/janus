@@ -83,8 +83,8 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
                 f"got {len(features)}"
             )
 
-        X = np.zeros((n_samples, self.sequence_length, features.shape[1]))
-        y = np.zeros(n_samples, dtype=np.int64)
+        X = np.zeros((n_samples, self.sequence_length, features.shape[1]), dtype=np.float32)
+        y = np.zeros(n_samples, dtype=np.float32)
 
         for i in range(n_samples):
             X[i] = features[i:i + self.sequence_length]

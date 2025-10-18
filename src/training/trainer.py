@@ -1,4 +1,4 @@
-"""Training module for Mamba classifier."""
+"""Training module for Mamba regressor."""
 
 import time
 from pathlib import Path
@@ -13,7 +13,6 @@ except Exception:
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 TENSORBOARD_AVAILABLE = False
 SummaryWriter = None
@@ -85,9 +84,7 @@ class Trainer:
         self.patience_counter = 0
         self.history = {
             'train_loss': [],
-            'train_acc': [],
             'val_loss': [],
-            'val_acc': [],
             'learning_rate': [],
         }
 
@@ -103,11 +100,8 @@ class Trainer:
         """
         self.model.train()
         total_loss = 0.0
-        correct = 0
-        total = 0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
-        for batch_idx, (inputs, targets) in enumerate(pbar):
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
             self.optimizer.zero_grad()
@@ -147,16 +141,10 @@ class Trainer:
                 self.optimizer.step()
 
             total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-
-            pbar.set_postfix(loss=total_loss / (batch_idx + 1), acc=100.0 * correct / total)
 
         avg_loss = total_loss / len(train_loader)
-        accuracy = 100. * correct / total
 
-        return {'loss': avg_loss, 'accuracy': accuracy}
+        return {'loss': avg_loss}
 
     def validate(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Validate the model.
@@ -170,28 +158,19 @@ class Trainer:
         """
         self.model.eval()
         total_loss = 0.0
-        correct = 0
-        total = 0
 
         with torch.no_grad():
-            pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]")
-            for batch_idx, (inputs, targets) in enumerate(pbar):
+            for batch_idx, (inputs, targets) in enumerate(val_loader):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
 
                 total_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
-
-                pbar.set_postfix(loss=total_loss / (batch_idx + 1), acc=100.0 * correct / total)
 
         avg_loss = total_loss / len(val_loader)
-        accuracy = 100. * correct / total
 
-        return {'loss': avg_loss, 'accuracy': accuracy}
+        return {'loss': avg_loss}
 
     def fit(
         self,
@@ -229,46 +208,55 @@ class Trainer:
             val_metrics = self.validate(val_loader, epoch)
 
             if self.scheduler:
-                self.scheduler.step()
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_metrics['loss'])
+                else:
+                    self.scheduler.step()
 
             current_lr = self.optimizer.param_groups[0]['lr']
 
             self.history['train_loss'].append(train_metrics['loss'])
-            self.history['train_acc'].append(train_metrics['accuracy'])
             self.history['val_loss'].append(val_metrics['loss'])
-            self.history['val_acc'].append(val_metrics['accuracy'])
             self.history['learning_rate'].append(current_lr)
 
             if self.writer:
                 self.writer.add_scalar('Loss/train', train_metrics['loss'], epoch)
                 self.writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
-                self.writer.add_scalar('Accuracy/train', train_metrics['accuracy'], epoch)
-                self.writer.add_scalar('Accuracy/val', val_metrics['accuracy'], epoch)
                 self.writer.add_scalar('Learning_Rate', current_lr, epoch)
 
             epoch_time = time.time() - epoch_start_time
-            print(f"\nEpoch {epoch}/{epochs} - {epoch_time:.2f}s")
-            print(f"Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.2f}%")
-            print(f"Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.2f}%")
-            print(f"Learning Rate: {current_lr:.6f}")
+            
+            print(f"\nEpoch {epoch}/{epochs} ({epoch_time:.1f}s)")
+            print(f"  Train Loss:    {train_metrics['loss']:.6f}")
+            print(f"  Val Loss:      {val_metrics['loss']:.6f}")
+            print(f"  Learning Rate: {current_lr:.6f}")
 
             if val_metrics['loss'] < self.best_val_loss - self.early_stopping_min_delta:
                 self.best_val_loss = val_metrics['loss']
                 self.patience_counter = 0
                 if self.checkpoint_dir:
                     self.save_checkpoint(epoch, val_metrics, is_best=True)
-                    print(f"✓ Best model saved (Val Loss: {val_metrics['loss']:.4f})")
+                    print(f"  New best model saved")
             else:
                 self.patience_counter += 1
                 if self.checkpoint_dir:
                     self.save_checkpoint(epoch, val_metrics, is_best=False)
+                print(f"  Patience: {self.patience_counter}/{self.early_stopping_patience}")
 
             if self.patience_counter >= self.early_stopping_patience:
-                print(f"\nEarly stopping triggered after {epoch} epochs")
+                print(f"\n{'='*50}")
+                print(f"Early stopping at epoch {epoch}")
+                print(f"Best validation loss: {self.best_val_loss:.6f}")
+                print(f"{'='*50}")
                 break
 
         if self.writer:
             self.writer.close()
+
+        print(f"\n{'='*50}")
+        print(f"Training completed")
+        print(f"Best validation loss: {self.best_val_loss:.6f}")
+        print(f"{'='*50}\n")
 
         return self.history
 
@@ -312,7 +300,7 @@ class Trainer:
         Returns:
             Checkpoint dictionary.
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 

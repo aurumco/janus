@@ -1,11 +1,11 @@
 model:
-  name: "MambaBTC"
-  d_model: 128
+  name: "Janus"
+  d_model: 96
   d_state: 16
   d_conv: 4
-  n_layers: 4
+  n_layers: 3
   dropout: 0.3
-  num_classes: 5
+  num_classes: 1
 
 data:
   input_window: 64
@@ -25,30 +25,31 @@ data:
     - "RSI_15_x_NYHours"
     - "garch_volatility"
   target_column: "target"
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
-  batch_size: 128
+  train_ratio: 0.75
+  val_ratio: 0.15
+  test_ratio: 0.10
+  batch_size: 256
   num_workers: 4
   shuffle_train: true
-  oversample_smote: true
-  smote_k_neighbors: 5
 
 training:
-  epochs: 100
-  learning_rate: 0.0005
-  weight_decay: 0.01
+  epochs: 150
+  learning_rate: 0.0003
+  weight_decay: 0.02
   optimizer: "adamw"
-  scheduler: "cosine"
-  warmup_epochs: 5
-  gradient_clip: 1.0
-  early_stopping_patience: 10
-  early_stopping_min_delta: 0.0001
+  scheduler: "reduce_on_plateau"
+  scheduler_patience: 7
+  scheduler_factor: 0.6
+  scheduler_min_lr: 0.00001
+  warmup_epochs: 0
+  gradient_clip: 0.5
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.000001
   save_best_only: true
   
 loss:
-  type: "cross_entropy"
-  label_smoothing: 0.1
+  type: "huber"
+  huber_delta: 0.3
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
@@ -70,20 +71,13 @@ logging:
 
 evaluation:
   metrics:
-    - "accuracy"
-    - "precision"
-    - "recall"
-    - "f1_score"
-    - "confusion_matrix"
-    - "roc_auc"
-  plot_confusion_matrix: true
-  plot_roc_curves: true
+    - "mae"
+    - "rmse"
+    - "mse"
+    - "r2_score"
+    - "sign_accuracy"
+  plot_predictions: true
+  plot_residuals: true
   plot_training_curves: true
-  class_names:
-    - "Strong Sell"
-    - "Sell"
-    - "Neutral"
-    - "Buy"
-    - "Strong Buy"
 
 seed: 42

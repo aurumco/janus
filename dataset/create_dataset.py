@@ -78,7 +78,7 @@ class DatasetBuilder:
         df_m15 = self.processor.merge_timeframes(df_m15, df_h1, timeframes['h4'])
 
         self._log(f"[5/5] Creating labels (lookahead={self.config.target_window_candles})...")
-        labels = self.labeler.label_hybrid_5class(
+        labels = self.labeler.label_regression(
             df_m15[['open', 'high', 'low', 'close', 'volume']]
         )
         df_m15['target'] = labels
@@ -130,15 +130,23 @@ class DatasetBuilder:
         self._log(f"Features: {len(features)}")
         self._log(f"Time elapsed: {elapsed_time:.2f}s")
 
-        label_counts = dataset['target'].value_counts().sort_index()
-        total = len(dataset)
+        target_values = dataset['target']
 
-        self._log("\nClass Distribution:")
-        class_names = ["Strong Sell", "Sell", "Neutral", "Buy", "Strong Buy"]
-        for i, name in enumerate(class_names):
-            count = label_counts.get(i, 0)
-            pct = (count / total * 100) if total > 0 else 0
-            self._log(f"  {i} ({name:12s}): {count:6,} ({pct:5.2f}%)")
+        self._log("\nTarget Distribution (Price Change %):")
+        self._log(f"  Mean: {target_values.mean():.4f} ({target_values.mean()*100:.2f}%)")
+        self._log(f"  Std:  {target_values.std():.4f} ({target_values.std()*100:.2f}%)")
+        self._log(f"  Min:  {target_values.min():.4f} ({target_values.min()*100:.2f}%)")
+        self._log(f"  Max:  {target_values.max():.4f} ({target_values.max()*100:.2f}%)")
+        self._log(f"  Median: {target_values.median():.4f} ({target_values.median()*100:.2f}%)")
+        
+        positive_samples = (target_values > 0).sum()
+        negative_samples = (target_values < 0).sum()
+        neutral_samples = (target_values == 0).sum()
+        total = len(target_values)
+        
+        self._log(f"\n  Positive: {positive_samples:6,} ({100*positive_samples/total:5.2f}%)")
+        self._log(f"  Negative: {negative_samples:6,} ({100*negative_samples/total:5.2f}%)")
+        self._log(f"  Neutral:  {neutral_samples:6,} ({100*neutral_samples/total:5.2f}%)")
 
         sl_neutralized = self.labeler.sl_neutralized_count
         self._log(f"\nSL-neutralized samples: {sl_neutralized:,}")

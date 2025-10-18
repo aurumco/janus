@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kaggle training script for Mamba Bitcoin trend classifier.
+"""Kaggle training script for Mamba Bitcoin price regressor.
 
 This script uses the Strategy Pattern for flexible package installation
 across different environments, ensuring clean separation of concerns.
@@ -152,7 +152,7 @@ def print_device_info() -> None:
 def main() -> None:
     """Main execution function."""
     print("="*70)
-    print("MAMBA BITCOIN TREND CLASSIFIER - KAGGLE TRAINING")
+    print("MAMBA BITCOIN PRICE REGRESSOR - KAGGLE TRAINING")
     print("="*70)
 
     repo_root = ensure_repository()

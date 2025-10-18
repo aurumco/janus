@@ -1,16 +1,14 @@
-# Janus Bitcoin Trend Classifier
+# Janus Bitcoin Price Regressor
 
-A state-of-the-art Bitcoin price trend classification system using the Mamba (Selective State Space Model) architecture. This project predicts future Bitcoin price movements across 5 classes based on historical market data.
+A state-of-the-art Bitcoin price change prediction system using the Mamba (Selective State Space Model) architecture. This project predicts continuous future Bitcoin price changes based on historical market data, enabling precise forecasting for trading applications.
 
 ## 🎯 Project Overview
 
-This classifier analyzes Bitcoin market data and predicts price trends over the next 20 candles (15-minute timeframe), categorizing movements into:
+This regressor analyzes Bitcoin market data and predicts continuous price changes over the next 20 candles (15-minute timeframe), outputting:
 
-- **Class 0**: Strong Sell (< -2%)
-- **Class 1**: Sell (-2% to -0.5%)
-- **Class 2**: Neutral (-0.5% to 0.5%)
-- **Class 3**: Buy (0.5% to 2%)
-- **Class 4**: Strong Buy (> 2%)
+- **Continuous percentage change**: Direct prediction of future price movement
+- **Stop-loss aware**: Predictions adjusted for realistic trading scenarios
+- **Direction and magnitude**: Both trend direction and expected size of movement
 
 ## 🏗️ Architecture
 
@@ -27,7 +25,7 @@ The project implements the Mamba architecture, which offers:
 1. **Input Projection Layer**: Maps 13 input features to model dimension
 2. **Stacked Mamba Blocks**: Multiple layers with residual connections
 3. **Layer Normalization**: Stabilizes training
-4. **Classifier Head**: Final prediction layer with dropout
+4. **Regression Head**: Final prediction layer outputting continuous price change
 
 ## 📊 Dataset
 
@@ -54,9 +52,10 @@ The project implements the Mamba architecture, which offers:
 - **Sequence Length**: 64 candles (16 hours of 15-min data)
 - **Prediction Horizon**: 20 candles ahead (5 hours)
 - **Input Shape**: (batch_size, 64, 13)
-- **Normalization**: All features scaled to [-1, 1]
-- **Stop Loss**: Dynamic ATR-based (1.4x ATR) or fixed 0.4%
-- **Risk/Reward**: Tiered exits at 1.5x, 2.0x, 4.0x stop distance
+- **Output Shape**: (batch_size, 1) continuous price change percentage
+- **Normalization**: All features scaled to [0, 1]
+- **Stop Loss Awareness**: Dynamic ATR-based (1.4x ATR) integrated into labels
+- **Target**: Realistic price change accounting for intraday stop-loss hits
 
 ## 🚀 Quick Start
 
@@ -82,7 +81,7 @@ python -m create_dataset
 **Output:** `janus_m15_dataset.parquet`, `janus_m15_scaler.joblib`
 
 #### 2. Model Training
-Train the Mamba classifier on the created dataset:
+Train the Mamba regressor on the created dataset:
 
 ```bash
 python train.py --config config.yaml
@@ -137,18 +136,18 @@ V5/
 │   ├── data/
 │   │   ├── base_strategy.py   # Strategy pattern interface
 │   │   ├── sequence_strategy.py # Sequence processing strategy
-│   │   ├── dataset.py         # PyTorch dataset
+│   │   ├── dataset.py         # PyTorch dataset (regression)
 │   │   └── data_loader.py     # Data loader factory
 │   │
 │   ├── models/
 │   │   ├── mamba_block.py     # Mamba SSM block implementation
-│   │   └── mamba_classifier.py # Complete classifier model
+│   │   └── mamba_regressor.py # Complete regressor model
 │   │
 │   ├── training/
 │   │   └── trainer.py         # Training loop with early stopping
 │   │
 │   ├── evaluation/
-│   │   ├── evaluator.py       # Model evaluation metrics
+│   │   ├── evaluator.py       # Regression evaluation metrics
 │   │   └── visualizer.py      # Visualization utilities
 │   │
 │   └── utils/
@@ -159,7 +158,7 @@ V5/
 │   ├── create_dataset.py      # Dataset creation script ⭐
 │   ├── data_processor.py      # Multi-timeframe processor
 │   ├── indicators.py          # Technical indicator calculator
-│   ├── labeling.py            # Price labeling strategy
+│   ├── labeling.py            # Regression labeling strategy
 │   ├── janus_m15_dataset.parquet
 │   └── janus_m15_scaler.joblib
 │
@@ -178,23 +177,31 @@ Key configuration parameters in `config.yaml`:
 ### Model Parameters
 ```yaml
 model:
+  name: "MambaBTC_Regression"
   d_model: 128          # Model dimension
   d_state: 16           # SSM state dimension
   d_conv: 4             # Convolution kernel size
   n_layers: 4           # Number of Mamba blocks
-  dropout: 0.2          # Dropout rate
+  dropout: 0.3          # Dropout rate
+  num_classes: 1        # Output dimension (1 for regression)
 ```
 
 ### Training Parameters
 ```yaml
 training:
   epochs: 100
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.01
   optimizer: "adamw"
-  scheduler: "cosine"
+  scheduler: "reduce_on_plateau"
+  scheduler_patience: 5
+  scheduler_factor: 0.5
   early_stopping_patience: 15
   gradient_clip: 1.0
+
+loss:
+  type: "huber"
+  huber_delta: 0.5
 ```
 
 ### Data Parameters
@@ -220,13 +227,15 @@ data:
 
 ### Model Evaluation
 
-The system provides comprehensive evaluation:
+The system provides comprehensive regression evaluation:
 
-- **Accuracy**: Overall and per-class
-- **Precision, Recall, F1-Score**: Macro and weighted averages
-- **Confusion Matrix**: Visual and numerical
-- **ROC Curves**: One-vs-Rest for each class
-- **AUC Scores**: Overall model discrimination
+- **MAE (Mean Absolute Error)**: Average prediction error
+- **RMSE (Root Mean Squared Error)**: Penalizes larger errors
+- **R² Score**: Goodness of fit measure
+- **Sign Accuracy**: Directional prediction accuracy
+- **MAPE**: Mean Absolute Percentage Error
+- **Correlation**: Linear relationship strength
+- **Residual Analysis**: Error distribution and patterns
 
 ### Backtesting Features
 
@@ -260,11 +269,11 @@ The backtesting engine simulates real futures trading with:
 
 Automatically generated plots:
 
-1. **Training Curves**: Loss and accuracy over epochs
-2. **Confusion Matrix**: Heatmap of predictions
-3. **ROC Curves**: Multi-class ROC analysis
-4. **Learning Rate Schedule**: LR changes over training
-5. **Class Distribution**: True vs predicted distributions
+1. **Training Curves**: Training and validation loss over epochs
+2. **Predicted vs Actual**: Scatter plot showing prediction quality
+3. **Error Distribution**: Histogram of prediction errors
+4. **Residual Analysis**: Q-Q plot and residual patterns
+5. **Learning Rate Schedule**: LR changes over training
 
 ## 🔧 Design Patterns
 
@@ -308,16 +317,16 @@ The project follows strict coding standards:
 
 ```python
 from src.config.config_loader import ConfigLoader
-from src.models.mamba_classifier import MambaClassifier
+from src.models.mamba_regressor import MambaRegressor
 
 config = ConfigLoader('config.yaml')
-model = MambaClassifier(
+model = MambaRegressor(
     input_dim=13,
     d_model=128,
     d_state=16,
     d_conv=4,
     n_layers=4,
-    num_classes=5,
+    output_dim=1,
 )
 ```
 
@@ -326,9 +335,10 @@ model = MambaClassifier(
 ```python
 from src.evaluation.evaluator import ModelEvaluator
 
-evaluator = ModelEvaluator(model, device, class_names)
+evaluator = ModelEvaluator(model, device)
 metrics = evaluator.evaluate(test_loader)
 evaluator.print_metrics(metrics)
+# Returns: MAE, RMSE, R², Sign Accuracy, etc.
 ```
 
 ## 🐛 Troubleshooting

@@ -5,7 +5,6 @@ from typing import Dict
 
 import pandas as pd
 from torch.utils.data import DataLoader
-import numpy as np
 from imblearn.over_sampling import SMOTE
 
 from .base_strategy import DataProcessingStrategy

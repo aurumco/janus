@@ -1,4 +1,4 @@
-"""PyTorch dataset implementation for Bitcoin trend classification."""
+"""PyTorch dataset implementation for Bitcoin trend prediction."""
 
 from typing import Tuple
 
@@ -15,10 +15,14 @@ class BitcoinTrendDataset(Dataset):
 
         Args:
             X: Feature sequences of shape (n_samples, seq_len, n_features).
-            y: Target labels of shape (n_samples,).
+            y: Target values of shape (n_samples,) for regression.
         """
         self.X = torch.FloatTensor(X)
-        self.y = torch.LongTensor(y)
+        self.y = torch.FloatTensor(y)
+        
+        # Ensure y has shape (n_samples, 1) for regression
+        if self.y.ndim == 1:
+            self.y = self.y.unsqueeze(1)
 
     def __len__(self) -> int:
         """Get dataset length.

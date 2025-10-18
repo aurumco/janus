@@ -32,6 +32,87 @@ class PriceLabelingStrategy:
         self.atr_period = atr_period
         self.sl_neutralized_count = 0
 
+    def label_regression(self, ohlcv: pd.DataFrame) -> pd.Series:
+        """Create regression labels based on future price change percentage.
+
+        Returns continuous price change values, neutralized by stop-loss hits.
+        This labeling strategy embodies core trading principles:
+        
+        1. Risk Management: Stop-loss aware labels prevent unrealistic expectations
+        2. Direction Detection: Continuous values preserve trend magnitude
+        3. Focus on Quality: Stop-loss neutralization filters low-quality setups
+        4. Realistic Outcomes: Labels reflect actual achievable returns
+        5. Avoid False Signals: Penalizes moves that would trigger stops
+        
+        Args:
+            ohlcv: DataFrame with OHLCV data.
+
+        Returns:
+            Series with continuous price change percentages.
+        """
+        n = len(ohlcv)
+        close = ohlcv["close"].values
+        high = ohlcv["high"].values
+        low = ohlcv["low"].values
+
+        if self.use_atr_stop:
+            atr = ta.atr(
+                high=ohlcv["high"],
+                low=ohlcv["low"],
+                close=ohlcv["close"],
+                length=self.atr_period,
+            )
+            atr_values = atr.bfill().fillna(self.sl_filter_pct).values
+        else:
+            atr_values = np.full(n, self.sl_filter_pct)
+
+        targets = np.full(n, 0.0, dtype=np.float32)
+        self.sl_neutralized_count = 0
+
+        for i in range(n - self.lookahead):
+            current_close = close[i]
+            future_close = close[i + self.lookahead]
+
+            window_start = i + 1
+            window_end = i + self.lookahead
+            window_high = high[window_start : window_end + 1]
+            window_low = low[window_start : window_end + 1]
+
+            if len(window_high) == 0:
+                continue
+
+            if self.use_atr_stop:
+                stop_distance = (atr_values[i] / current_close) * self.atr_multiplier
+            else:
+                stop_distance = self.sl_filter_pct
+
+            price_change = (future_close - current_close) / current_close
+
+            upward_excursion = (np.max(window_high) - current_close) / current_close
+            downward_excursion = (
+                current_close - np.min(window_low)
+            ) / current_close
+
+            # If we expected long position but stop loss hit
+            if price_change > 0 and downward_excursion > stop_distance:
+                targets[i] = -stop_distance
+                self.sl_neutralized_count += 1
+                continue
+
+            # If we expected short position but stop loss hit
+            if price_change < 0 and upward_excursion > stop_distance:
+                targets[i] = stop_distance
+                self.sl_neutralized_count += 1
+                continue
+
+            # No stop loss hit, record actual price change
+            targets[i] = price_change
+
+        series = pd.Series(targets, index=ohlcv.index, dtype=np.float32)
+        series.attrs["sl_neutralized"] = self.sl_neutralized_count
+
+        return series
+
     def label_hybrid_5class(self, ohlcv: pd.DataFrame) -> pd.Series:
         """Create hybrid 5-class labels based on price changes with ATR-based stops.
 

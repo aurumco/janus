@@ -1,45 +1,36 @@
-"""Model evaluation module with comprehensive metrics."""
+"""Model evaluation module for regression metrics."""
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    roc_curve,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
 class ModelEvaluator:
-    """Evaluates model performance with comprehensive metrics."""
+    """Evaluates regression model performance with comprehensive metrics."""
 
     def __init__(
         self,
         model: nn.Module,
         device: torch.device,
-        class_names: List[str],
     ) -> None:
         """Initialize evaluator.
 
         Args:
             model: Model to evaluate.
             device: Device to run evaluation on.
-            class_names: List of class names for reporting.
         """
         self.model = model
         self.device = device
-        self.class_names = class_names
-        self.num_classes = len(class_names)
 
     def evaluate(self, data_loader: DataLoader) -> Dict:
         """Evaluate model on a dataset.
@@ -53,29 +44,22 @@ class ModelEvaluator:
         self.model.eval()
         all_predictions = []
         all_targets = []
-        all_probabilities = []
 
         with torch.no_grad():
             for inputs, targets in tqdm(data_loader, desc="Evaluating"):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 outputs = self.model(inputs)
-                probabilities = torch.softmax(outputs, dim=1)
-                _, predictions = outputs.max(1)
 
-                all_predictions.extend(predictions.cpu().numpy())
+                all_predictions.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
-                all_probabilities.extend(probabilities.cpu().numpy())
 
-        all_predictions = np.array(all_predictions)
-        all_targets = np.array(all_targets)
-        all_probabilities = np.array(all_probabilities)
+        all_predictions = np.array(all_predictions).flatten()
+        all_targets = np.array(all_targets).flatten()
 
-        metrics = self._compute_metrics(
-            all_targets,
-            all_predictions,
-            all_probabilities
-        )
+        metrics = self._compute_metrics(all_targets, all_predictions)
+        metrics['y_true'] = all_targets
+        metrics['y_pred'] = all_predictions
 
         return metrics
 
@@ -83,72 +67,54 @@ class ModelEvaluator:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        y_prob: np.ndarray,
     ) -> Dict:
-        """Compute comprehensive evaluation metrics.
+        """Compute comprehensive regression evaluation metrics.
 
         Args:
-            y_true: True labels.
-            y_pred: Predicted labels.
-            y_prob: Predicted probabilities.
+            y_true: True values.
+            y_pred: Predicted values.
 
         Returns:
             Dictionary with all metrics.
         """
         metrics = {}
 
-        metrics['accuracy'] = accuracy_score(y_true, y_pred)
-        metrics['precision_macro'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
-        metrics['recall_macro'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
-        metrics['f1_macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        # Standard regression metrics
+        metrics['mae'] = mean_absolute_error(y_true, y_pred)
+        metrics['mse'] = mean_squared_error(y_true, y_pred)
+        metrics['rmse'] = np.sqrt(metrics['mse'])
+        metrics['r2'] = r2_score(y_true, y_pred)
 
-        metrics['precision_weighted'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
-        metrics['recall_weighted'] = recall_score(y_true, y_pred, average='weighted', zero_division=0)
-        metrics['f1_weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        # Residuals
+        residuals = y_true - y_pred
+        metrics['residuals'] = residuals
+        metrics['mean_residual'] = np.mean(residuals)
+        metrics['std_residual'] = np.std(residuals)
 
-        metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred)
+        # Sign accuracy (direction prediction)
+        # Predicting if price will go up or down
+        true_signs = np.sign(y_true)
+        pred_signs = np.sign(y_pred)
+        metrics['sign_accuracy'] = np.mean(true_signs == pred_signs)
 
-        metrics['classification_report'] = classification_report(
-            y_true,
-            y_pred,
-            target_names=self.class_names,
-            zero_division=0
-        )
+        # Mean Absolute Percentage Error (MAPE)
+        # Only calculate for non-zero true values
+        non_zero_mask = y_true != 0
+        if non_zero_mask.sum() > 0:
+            metrics['mape'] = np.mean(
+                np.abs((y_true[non_zero_mask] - y_pred[non_zero_mask]) / y_true[non_zero_mask])
+            ) * 100
+        else:
+            metrics['mape'] = 0.0
 
-        try:
-            metrics['roc_auc_ovr'] = roc_auc_score(
-                y_true,
-                y_prob,
-                multi_class='ovr',
-                average='macro'
-            )
-            metrics['roc_auc_ovo'] = roc_auc_score(
-                y_true,
-                y_prob,
-                multi_class='ovo',
-                average='macro'
-            )
-        except ValueError:
-            metrics['roc_auc_ovr'] = 0.0
-            metrics['roc_auc_ovo'] = 0.0
+        # Additional statistics
+        metrics['mean_true'] = np.mean(y_true)
+        metrics['mean_pred'] = np.mean(y_pred)
+        metrics['std_true'] = np.std(y_true)
+        metrics['std_pred'] = np.std(y_pred)
 
-        metrics['roc_curves'] = {}
-        for i in range(self.num_classes):
-            y_true_binary = (y_true == i).astype(int)
-            fpr, tpr, _ = roc_curve(y_true_binary, y_prob[:, i])
-            metrics['roc_curves'][self.class_names[i]] = {
-                'fpr': fpr,
-                'tpr': tpr,
-            }
-
-        metrics['per_class_accuracy'] = {}
-        for i in range(self.num_classes):
-            mask = y_true == i
-            if mask.sum() > 0:
-                class_acc = (y_pred[mask] == y_true[mask]).mean()
-                metrics['per_class_accuracy'][self.class_names[i]] = class_acc
-            else:
-                metrics['per_class_accuracy'][self.class_names[i]] = 0.0
+        # Correlation
+        metrics['correlation'] = np.corrcoef(y_true, y_pred)[0, 1]
 
         return metrics
 
@@ -159,28 +125,32 @@ class ModelEvaluator:
             metrics: Dictionary of metrics from evaluate().
         """
         print("\n" + "="*70)
-        print("EVALUATION RESULTS")
+        print("REGRESSION EVALUATION RESULTS")
         print("="*70)
 
-        print(f"\nOverall Accuracy: {metrics['accuracy']:.4f}")
-        print(f"Macro F1-Score: {metrics['f1_macro']:.4f}")
-        print(f"Weighted F1-Score: {metrics['f1_weighted']:.4f}")
-        print(f"ROC AUC (OvR): {metrics['roc_auc_ovr']:.4f}")
-        print(f"ROC AUC (OvO): {metrics['roc_auc_ovo']:.4f}")
+        print("\n--- Error Metrics ---")
+        print(f"MAE (Mean Absolute Error):  {metrics['mae']:.6f}")
+        print(f"MSE (Mean Squared Error):   {metrics['mse']:.6f}")
+        print(f"RMSE (Root Mean Squared):   {metrics['rmse']:.6f}")
+        print(f"MAPE (Mean Abs % Error):    {metrics['mape']:.2f}%")
 
-        print("\nPer-Class Accuracy:")
-        for class_name, acc in metrics['per_class_accuracy'].items():
-            print(f"  {class_name}: {acc:.4f}")
+        print("\n--- Goodness of Fit ---")
+        print(f"R² Score:                   {metrics['r2']:.4f}")
+        print(f"Correlation:                {metrics['correlation']:.4f}")
 
-        print("\n" + "-"*70)
-        print("CLASSIFICATION REPORT")
-        print("-"*70)
-        print(metrics['classification_report'])
+        print("\n--- Direction Accuracy ---")
+        print(f"Sign Accuracy:              {metrics['sign_accuracy']:.2%}")
 
-        print("\n" + "-"*70)
-        print("CONFUSION MATRIX")
-        print("-"*70)
-        print(metrics['confusion_matrix'])
+        print("\n--- Residual Statistics ---")
+        print(f"Mean Residual:              {metrics['mean_residual']:.6f}")
+        print(f"Std Residual:               {metrics['std_residual']:.6f}")
+
+        print("\n--- Distribution Statistics ---")
+        print(f"Mean (True):                {metrics['mean_true']:.6f} ({metrics['mean_true']*100:.2f}%)")
+        print(f"Mean (Predicted):           {metrics['mean_pred']:.6f} ({metrics['mean_pred']*100:.2f}%)")
+        print(f"Std (True):                 {metrics['std_true']:.6f}")
+        print(f"Std (Predicted):            {metrics['std_pred']:.6f}")
+
         print("="*70 + "\n")
 
     def save_metrics(self, metrics: Dict, output_path: Path) -> None:
@@ -194,27 +164,30 @@ class ModelEvaluator:
 
         with open(output_path, 'w') as f:
             f.write("="*70 + "\n")
-            f.write("EVALUATION RESULTS\n")
+            f.write("REGRESSION EVALUATION RESULTS\n")
             f.write("="*70 + "\n\n")
 
-            f.write(f"Overall Accuracy: {metrics['accuracy']:.4f}\n")
-            f.write(f"Macro F1-Score: {metrics['f1_macro']:.4f}\n")
-            f.write(f"Weighted F1-Score: {metrics['f1_weighted']:.4f}\n")
-            f.write(f"ROC AUC (OvR): {metrics['roc_auc_ovr']:.4f}\n")
-            f.write(f"ROC AUC (OvO): {metrics['roc_auc_ovo']:.4f}\n\n")
+            f.write("--- Error Metrics ---\n")
+            f.write(f"MAE (Mean Absolute Error):  {metrics['mae']:.6f}\n")
+            f.write(f"MSE (Mean Squared Error):   {metrics['mse']:.6f}\n")
+            f.write(f"RMSE (Root Mean Squared):   {metrics['rmse']:.6f}\n")
+            f.write(f"MAPE (Mean Abs % Error):    {metrics['mape']:.2f}%\n\n")
 
-            f.write("Per-Class Accuracy:\n")
-            for class_name, acc in metrics['per_class_accuracy'].items():
-                f.write(f"  {class_name}: {acc:.4f}\n")
+            f.write("--- Goodness of Fit ---\n")
+            f.write(f"R² Score:                   {metrics['r2']:.4f}\n")
+            f.write(f"Correlation:                {metrics['correlation']:.4f}\n\n")
 
-            f.write("\n" + "-"*70 + "\n")
-            f.write("CLASSIFICATION REPORT\n")
-            f.write("-"*70 + "\n")
-            f.write(metrics['classification_report'])
-            f.write("\n")
+            f.write("--- Direction Accuracy ---\n")
+            f.write(f"Sign Accuracy:              {metrics['sign_accuracy']:.2%}\n\n")
 
-            f.write("\n" + "-"*70 + "\n")
-            f.write("CONFUSION MATRIX\n")
-            f.write("-"*70 + "\n")
-            f.write(str(metrics['confusion_matrix']))
+            f.write("--- Residual Statistics ---\n")
+            f.write(f"Mean Residual:              {metrics['mean_residual']:.6f}\n")
+            f.write(f"Std Residual:               {metrics['std_residual']:.6f}\n\n")
+
+            f.write("--- Distribution Statistics ---\n")
+            f.write(f"Mean (True):                {metrics['mean_true']:.6f} ({metrics['mean_true']*100:.2f}%)\n")
+            f.write(f"Mean (Predicted):           {metrics['mean_pred']:.6f} ({metrics['mean_pred']*100:.2f}%)\n")
+            f.write(f"Std (True):                 {metrics['std_true']:.6f}\n")
+            f.write(f"Std (Predicted):            {metrics['std_pred']:.6f}\n")
+
             f.write("\n" + "="*70 + "\n")
