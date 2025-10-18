@@ -23,6 +23,11 @@ from src.evaluation.evaluator import ModelEvaluator
 from src.evaluation.visualizer import MetricsVisualizer
 from src.models.mamba_regressor import MambaRegressor
 from src.training.trainer import Trainer
+from src.training.losses import (
+    DirectionalMSELoss,
+    AsymmetricMSELoss,
+    CombinedDirectionalLoss,
+)
 from src.utils.helpers import get_device, save_model_architecture, set_seed
 
 
@@ -173,6 +178,26 @@ def main() -> None:
     elif loss_type == 'mae':
         criterion = nn.L1Loss()
         print("Using MAE Loss for regression")
+    elif loss_type == 'directional_mse':
+        direction_weight = config.get('loss.direction_weight', 2.0)
+        criterion = DirectionalMSELoss(direction_weight=direction_weight)
+        print(f"Using Directional MSE Loss (direction_weight={direction_weight})")
+    elif loss_type == 'asymmetric_mse':
+        penalty = config.get('loss.underestimate_penalty', 1.5)
+        criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
+        print(f"Using Asymmetric MSE Loss (penalty={penalty})")
+    elif loss_type == 'combined_directional':
+        mse_w = config.get('loss.mse_weight', 1.0)
+        dir_w = config.get('loss.direction_weight', 2.0)
+        asym_w = config.get('loss.asymmetric_weight', 0.5)
+        penalty = config.get('loss.underestimate_penalty', 1.3)
+        criterion = CombinedDirectionalLoss(
+            mse_weight=mse_w,
+            direction_weight=dir_w,
+            asymmetric_weight=asym_w,
+            underestimate_penalty=penalty,
+        )
+        print(f"Using Combined Directional Loss (dir_w={dir_w}, asym_w={asym_w})")
     else:
         huber_delta = config.get('loss.huber_delta', 0.5)
         criterion = nn.HuberLoss(delta=huber_delta)
@@ -212,6 +237,7 @@ def main() -> None:
         early_stopping_patience=config.get('training.early_stopping_patience', 10),
         early_stopping_min_delta=config.get('training.early_stopping_min_delta', 0.0001),
         use_amp=config.get('device.mixed_precision', True),
+        warmup_epochs=config.get('training.warmup_epochs', 0),
     )
 
     if args.resume:

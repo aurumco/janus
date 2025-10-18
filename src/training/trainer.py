@@ -34,6 +34,7 @@ class Trainer:
         early_stopping_patience: int = 10,
         early_stopping_min_delta: float = 0.0001,
         use_amp: bool = False,
+        warmup_epochs: int = 0,
     ) -> None:
         """Initialize trainer.
 
@@ -49,12 +50,15 @@ class Trainer:
             early_stopping_patience: Epochs to wait before early stopping.
             early_stopping_min_delta: Minimum change to qualify as improvement.
             use_amp: Whether to use automatic mixed precision.
+            warmup_epochs: Number of warmup epochs with linear LR increase.
         """
         self.model = model
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
         self.scheduler = scheduler
+        self.warmup_epochs = warmup_epochs
+        self.initial_lr = optimizer.param_groups[0]['lr']
         self.use_amp = use_amp
         if self.use_amp:
             try:
@@ -207,7 +211,12 @@ class Trainer:
             train_metrics = self.train_epoch(train_loader, epoch)
             val_metrics = self.validate(val_loader, epoch)
 
-            if self.scheduler:
+            # Warmup phase: linearly increase LR
+            if epoch <= self.warmup_epochs:
+                warmup_lr = self.initial_lr * (epoch / self.warmup_epochs)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = warmup_lr
+            elif self.scheduler:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_metrics['loss'])
                 else:
@@ -227,21 +236,21 @@ class Trainer:
             epoch_time = time.time() - epoch_start_time
             
             print(f"\nEpoch {epoch}/{epochs} ({epoch_time:.1f}s)")
-            print(f"  Train Loss:    {train_metrics['loss']:.6f}")
-            print(f"  Val Loss:      {val_metrics['loss']:.6f}")
-            print(f"  Learning Rate: {current_lr:.6f}")
+            print(f"  • Train Loss:    {train_metrics['loss']:.6f}")
+            print(f"  • Val Loss:      {val_metrics['loss']:.6f}")
+            print(f"  • Learning Rate: {current_lr:.6f}")
 
             if val_metrics['loss'] < self.best_val_loss - self.early_stopping_min_delta:
                 self.best_val_loss = val_metrics['loss']
                 self.patience_counter = 0
                 if self.checkpoint_dir:
                     self.save_checkpoint(epoch, val_metrics, is_best=True)
-                    print(f"  New best model saved")
+                    print(f"  ✓ New best model saved")
             else:
                 self.patience_counter += 1
                 if self.checkpoint_dir:
                     self.save_checkpoint(epoch, val_metrics, is_best=False)
-                print(f"  Patience: {self.patience_counter}/{self.early_stopping_patience}")
+                print(f"  ⏳ Patience: {self.patience_counter}/{self.early_stopping_patience}")
 
             if self.patience_counter >= self.early_stopping_patience:
                 print(f"\n{'='*50}")
