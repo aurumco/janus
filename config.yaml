@@ -31,6 +31,7 @@ data:
   batch_size: 128
   num_workers: 4
   shuffle_train: true
+  oversample_smote: false
 
 training:
   epochs: 100
@@ -45,8 +46,9 @@ training:
   save_best_only: true
   
 loss:
-  type: "cross_entropy"
-  label_smoothing: 0.1
+  type: "focal"
+  gamma: 2.0
+  label_smoothing: 0.0
   class_weights: [7.6, 1.5, 0.3, 1.2, 8.4]
 
 paths:
