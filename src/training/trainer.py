@@ -248,8 +248,6 @@ class Trainer:
                     print(f"  ✓ New best model saved")
             else:
                 self.patience_counter += 1
-                if self.checkpoint_dir:
-                    self.save_checkpoint(epoch, val_metrics, is_best=False)
                 print(f"  ⏳ Patience: {self.patience_counter}/{self.early_stopping_patience}")
 
             if self.patience_counter >= self.early_stopping_patience:

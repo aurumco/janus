@@ -26,7 +26,7 @@ from src.training.trainer import Trainer
 from src.training.losses import (
     DirectionalMSELoss,
     AsymmetricMSELoss,
-    CombinedDirectionalLoss,
+    SignWeightedMSELoss,
 )
 from src.utils.helpers import get_device, save_model_architecture, set_seed
 
@@ -180,24 +180,20 @@ def main() -> None:
         print("Using MAE Loss for regression")
     elif loss_type == 'directional_mse':
         direction_weight = config.get('loss.direction_weight', 2.0)
-        criterion = DirectionalMSELoss(direction_weight=direction_weight)
-        print(f"Using Directional MSE Loss (direction_weight={direction_weight})")
+        variance_weight = config.get('loss.variance_weight', 0.5)
+        criterion = DirectionalMSELoss(
+            direction_weight=direction_weight,
+            variance_weight=variance_weight,
+        )
+        print(f"Using Directional MSE Loss (dir_w={direction_weight}, var_w={variance_weight})")
+    elif loss_type == 'sign_weighted_mse':
+        sign_penalty = config.get('loss.sign_penalty_multiplier', 5.0)
+        criterion = SignWeightedMSELoss(sign_penalty_multiplier=sign_penalty)
+        print(f"Using Sign-Weighted MSE Loss (penalty={sign_penalty}x for wrong sign)")
     elif loss_type == 'asymmetric_mse':
         penalty = config.get('loss.underestimate_penalty', 1.5)
         criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
         print(f"Using Asymmetric MSE Loss (penalty={penalty})")
-    elif loss_type == 'combined_directional':
-        mse_w = config.get('loss.mse_weight', 1.0)
-        dir_w = config.get('loss.direction_weight', 2.0)
-        asym_w = config.get('loss.asymmetric_weight', 0.5)
-        penalty = config.get('loss.underestimate_penalty', 1.3)
-        criterion = CombinedDirectionalLoss(
-            mse_weight=mse_w,
-            direction_weight=dir_w,
-            asymmetric_weight=asym_w,
-            underestimate_penalty=penalty,
-        )
-        print(f"Using Combined Directional Loss (dir_w={dir_w}, asym_w={asym_w})")
     else:
         huber_delta = config.get('loss.huber_delta', 0.5)
         criterion = nn.HuberLoss(delta=huber_delta)

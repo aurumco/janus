@@ -5,25 +5,31 @@ import torch.nn as nn
 
 
 class DirectionalMSELoss(nn.Module):
-    """MSE Loss with directional penalty for wrong predictions.
+    """MSE Loss with directional penalty and variance regularization.
     
-    Combines MSE with a penalty for predicting the wrong direction,
-    which is critical for trading applications.
+    Prevents mode collapse by penalizing constant predictions.
     """
 
-    def __init__(self, direction_weight: float = 1.0, epsilon: float = 1e-8) -> None:
+    def __init__(
+        self, 
+        direction_weight: float = 2.0,
+        variance_weight: float = 0.5,
+        epsilon: float = 1e-8
+    ) -> None:
         """Initialize DirectionalMSELoss.
 
         Args:
-            direction_weight: Weight for directional penalty (higher = more emphasis on direction).
+            direction_weight: Weight for directional penalty.
+            variance_weight: Weight for variance regularization (prevents flat predictions).
             epsilon: Small value to avoid division by zero.
         """
         super().__init__()
         self.direction_weight = direction_weight
+        self.variance_weight = variance_weight
         self.epsilon = epsilon
 
     def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute directional MSE loss.
+        """Compute directional MSE loss with variance regularization.
 
         Args:
             predictions: Model predictions (batch_size, 1).
@@ -35,19 +41,30 @@ class DirectionalMSELoss(nn.Module):
         # Standard MSE loss
         mse_loss = torch.mean((predictions - targets) ** 2)
 
-        # Directional penalty: penalize when signs don't match
-        pred_signs = torch.sign(predictions)
-        target_signs = torch.sign(targets)
+        # Directional component: Only penalize WRONG direction
+        pred_signs = torch.sign(predictions + self.epsilon)
+        target_signs = torch.sign(targets + self.epsilon)
         
-        # Create mask where signs differ (wrong direction)
+        # Mask for wrong direction
         wrong_direction = (pred_signs != target_signs).float()
         
-        # Penalty is proportional to how wrong we are when direction is wrong
-        directional_penalty = wrong_direction * torch.abs(predictions - targets)
+        # Extra penalty for wrong direction, scaled by magnitude of target
+        directional_penalty = wrong_direction * (torch.abs(targets) ** 2)
         directional_loss = torch.mean(directional_penalty)
 
+        # Variance regularization: Penalize if predictions have too low variance
+        # This prevents mode collapse to constant predictions
+        pred_var = torch.var(predictions)
+        target_var = torch.var(targets)
+        # Penalize when pred_var is much smaller than target_var
+        variance_penalty = torch.clamp(target_var - pred_var, min=0.0)
+        
         # Combined loss
-        total_loss = mse_loss + self.direction_weight * directional_loss
+        total_loss = (
+            mse_loss + 
+            self.direction_weight * directional_loss +
+            self.variance_weight * variance_penalty
+        )
 
         return total_loss
 
@@ -132,72 +149,67 @@ class QuantileLoss(nn.Module):
         return loss
 
 
-class CombinedDirectionalLoss(nn.Module):
-    """Combines multiple loss components for optimal trading performance.
+class SignWeightedMSELoss(nn.Module):
+    """MSE Loss that heavily weights sign accuracy.
     
-    - MSE for magnitude accuracy
-    - Directional penalty for sign accuracy
-    - Asymmetric penalty to avoid underestimating movements
+    Uses multiplicative penalty for wrong sign predictions,
+    preventing the model from predicting near-zero values.
     """
 
     def __init__(
         self,
-        mse_weight: float = 1.0,
-        direction_weight: float = 2.0,
-        asymmetric_weight: float = 0.5,
-        underestimate_penalty: float = 1.3,
+        sign_penalty_multiplier: float = 5.0,
+        epsilon: float = 1e-6,
     ) -> None:
-        """Initialize CombinedDirectionalLoss.
+        """Initialize SignWeightedMSELoss.
 
         Args:
-            mse_weight: Weight for MSE component.
-            direction_weight: Weight for directional accuracy.
-            asymmetric_weight: Weight for asymmetric penalty.
-            underestimate_penalty: Penalty multiplier for underestimation.
+            sign_penalty_multiplier: How much worse wrong-sign predictions are.
+            epsilon: Small value for numerical stability.
         """
         super().__init__()
-        self.mse_weight = mse_weight
-        self.direction_weight = direction_weight
-        self.asymmetric_weight = asymmetric_weight
-        self.underestimate_penalty = underestimate_penalty
+        self.sign_penalty_multiplier = sign_penalty_multiplier
+        self.epsilon = epsilon
 
     def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute combined loss.
+        """Compute sign-weighted MSE loss.
 
         Args:
             predictions: Model predictions (batch_size, 1).
             targets: True targets (batch_size, 1).
 
         Returns:
-            Combined loss value.
+            Weighted loss value.
         """
-        # 1. MSE component
-        mse_loss = torch.mean((predictions - targets) ** 2)
-
-        # 2. Directional component
+        # Base squared errors
+        squared_errors = (predictions - targets) ** 2
+        
+        # Check sign agreement
         pred_signs = torch.sign(predictions)
         target_signs = torch.sign(targets)
-        wrong_direction = (pred_signs != target_signs).float()
-        directional_penalty = wrong_direction * torch.abs(predictions - targets)
-        directional_loss = torch.mean(directional_penalty)
-
-        # 3. Asymmetric component (penalize underestimation)
-        errors = predictions - targets
-        squared_errors = errors ** 2
+        correct_sign = (pred_signs == target_signs).float()
         
-        underestimate_mask = ((predictions < targets) & (targets > 0)).float()
-        overestimate_mask = ((predictions > targets) & (targets < 0)).float()
-        
-        penalties = torch.ones_like(squared_errors)
-        penalties = penalties + (underestimate_mask + overestimate_mask) * (self.underestimate_penalty - 1.0)
-        
-        asymmetric_loss = torch.mean(squared_errors * penalties)
-
-        # Combine all components
-        total_loss = (
-            self.mse_weight * mse_loss +
-            self.direction_weight * directional_loss +
-            self.asymmetric_weight * asymmetric_loss
+        # Weight errors based on sign correctness
+        # Correct sign: weight = 1.0
+        # Wrong sign: weight = sign_penalty_multiplier
+        weights = torch.where(
+            correct_sign > 0.5,
+            torch.ones_like(squared_errors),
+            torch.full_like(squared_errors, self.sign_penalty_multiplier)
         )
-
-        return total_loss
+        
+        # Also penalize predictions that are too timid
+        # If |target| > threshold but |pred| is small, add penalty
+        target_magnitude = torch.abs(targets)
+        pred_magnitude = torch.abs(predictions)
+        timid_mask = (target_magnitude > 0.005) & (pred_magnitude < 0.002)
+        weights = torch.where(
+            timid_mask,
+            weights * 2.0,  # Double penalty for being too conservative
+            weights
+        )
+        
+        # Weighted MSE
+        weighted_loss = torch.mean(weights * squared_errors)
+        
+        return weighted_loss
