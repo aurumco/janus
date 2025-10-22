@@ -1,13 +1,11 @@
 model:
   name: "Janus"
-  d_model: 144
+  d_model: 128
   d_state: 16
   d_conv: 4
   n_layers: 4
-  dropout: 0.25
+  dropout: 0.20
   num_classes: 1
-  quantiles: [0.1, 0.5, 0.9]
-  use_attention: true
 
 data:
   input_window: 64
@@ -30,29 +28,29 @@ data:
   train_ratio: 0.75
   val_ratio: 0.15
   test_ratio: 0.10
-  batch_size: 128
+  batch_size: 160
   num_workers: 4
   shuffle_train: true
 
 training:
   epochs: 150
-  learning_rate: 0.0005
-  weight_decay: 0.01
+  learning_rate: 0.0007
+  weight_decay: 0.005
   optimizer: "adamw"
   scheduler: "reduce_on_plateau"
   scheduler_patience: 12
   scheduler_factor: 0.7
   scheduler_min_lr: 0.00001
   warmup_epochs: 0
-  gradient_clip: 1.0
-  early_stopping_patience: 20
+  gradient_clip: 2.0
+  early_stopping_patience: 10
   early_stopping_min_delta: 0.000001
   save_best_only: true
   
 loss:
-  type: "multi_quantile"
-  quantiles: [0.1, 0.5, 0.9]
-  direction_weight: 2.0
+  type: "confidence_weighted"
+  wrong_sign_penalty: 2.8
+  magnitude_weight: 0.6
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
