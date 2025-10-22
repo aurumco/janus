@@ -1,56 +1,44 @@
 """Mamba-based regressor for Bitcoin price change prediction."""
 
-from typing import Dict, List
+from typing import Dict
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .mamba_block import MambaBlock
 
 
 class MambaRegressor(nn.Module):
-    """Mamba-based regressor for time series prediction.
-
-    Uses state space models for efficient sequence processing.
-    Supports both single-output and multi-quantile regression.
-    """
+    """Mamba-based sequence regressor for continuous price change prediction."""
 
     def __init__(
         self,
-        d_model: int = 128,
-        d_state: int = 16,
-        d_conv: int = 4,
-        n_layers: int = 4,
-        dropout: float = 0.2,
-        num_features: int = 13,
-        num_classes: int = 1,
-        quantiles: List[float] | None = None,
-        use_attention: bool = False,
+        input_dim: int,
+        d_model: int,
+        d_state: int,
+        d_conv: int,
+        n_layers: int,
+        output_dim: int = 1,
+        dropout: float = 0.1,
     ) -> None:
-        """Initialize MambaRegressor.
+        """Initialize Mamba regressor.
 
         Args:
-            d_model: Dimension of the model.
-            d_state: State space dimension.
+            input_dim: Input feature dimension.
+            d_model: Model dimension.
+            d_state: SSM state dimension.
             d_conv: Convolution kernel size.
-            n_layers: Number of Mamba layers.
-            dropout: Dropout rate.
-            num_features: Number of input features.
-            num_classes: Number of output classes (1 for regression).
-            quantiles: List of quantiles to predict (e.g., [0.1, 0.5, 0.9]).
-                      If None, uses standard single-output regression.
-            use_attention: Whether to add attention layer before output.
+            n_layers: Number of Mamba blocks.
+            output_dim: Output dimension (1 for single value regression).
+            dropout: Dropout probability.
         """
         super().__init__()
 
+        self.input_dim = input_dim
         self.d_model = d_model
-        self.num_classes = num_classes
-        self.quantiles = quantiles if quantiles is not None else [0.5]
-        self.use_attention = use_attention
-        self.num_quantiles = len(self.quantiles)
+        self.output_dim = output_dim
 
-        self.input_projection = nn.Linear(num_features, d_model)
+        self.input_projection = nn.Linear(input_dim, d_model)
         self.input_norm = nn.LayerNorm(d_model)
 
         self.mamba_layers = nn.ModuleList([
@@ -67,69 +55,37 @@ class MambaRegressor(nn.Module):
             nn.LayerNorm(d_model) for _ in range(n_layers)
         ])
 
-        if self.use_attention:
-            self.attention = nn.MultiheadAttention(
-                embed_dim=d_model,
-                num_heads=8,
-                dropout=dropout,
-                batch_first=True,
-            )
-            self.attention_norm = nn.LayerNorm(d_model)
-
-        if self.num_quantiles > 1:
-            self.quantile_heads = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(d_model, d_model // 2),
-                    nn.GELU(),
-                    nn.Dropout(dropout),
-                    nn.Linear(d_model // 2, 1),
-                )
-                for _ in range(self.num_quantiles)
-            ])
-        else:
-            self.output_projection = nn.Sequential(
-                nn.Linear(d_model, d_model // 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(d_model // 2, num_classes),
-            )
+        # Regression head: outputs continuous value
+        self.regression_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, output_dim),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the model.
+        """Forward pass through the regressor.
 
         Args:
-            x: Input tensor of shape (batch_size, seq_len, num_features).
+            x: Input tensor of shape (batch, seq_len, input_dim).
 
         Returns:
-            Predictions of shape (batch_size, num_quantiles) for quantile regression,
-            or (batch_size, num_classes) for standard regression.
+            Predictions tensor of shape (batch, output_dim).
         """
-        # Input projection
         x = self.input_projection(x)
         x = self.input_norm(x)
 
-        # Mamba layers
         for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
             residual = x
             x = mamba_layer(x)
             x = layer_norm(x + residual)
 
-        # Optional attention
-        if self.use_attention:
-            attn_out, _ = self.attention(x, x, x)
-            x = self.attention_norm(x + attn_out)
-        
-        # Take last timestep
+        # Use last sequence position for prediction
         x = x[:, -1, :]
-        
-        # Multi-quantile output
-        if self.num_quantiles > 1:
-            quantile_preds = [head(x) for head in self.quantile_heads]
-            x = torch.cat(quantile_preds, dim=1)  # (batch, num_quantiles)
-        else:
-            x = self.output_projection(x)
 
-        return x
+        prediction = self.regression_head(x)
+
+        return prediction
 
     def get_num_parameters(self) -> Dict[str, int]:
         """Get the number of parameters in the model.

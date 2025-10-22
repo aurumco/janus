@@ -51,15 +51,8 @@ class ModelEvaluator:
 
                 outputs = self.model(inputs)
 
-                # Handle quantile outputs: (batch, num_quantiles)
-                if outputs.ndim == 2 and outputs.size(1) > 1:
-                    median_idx = outputs.size(1) // 2
-                    median_pred = outputs[:, median_idx]
-                    all_predictions.extend(median_pred.detach().cpu().numpy())
-                else:
-                    all_predictions.extend(outputs.squeeze(-1).detach().cpu().numpy())
-
-                all_targets.extend(targets.squeeze(-1).detach().cpu().numpy())
+                all_predictions.extend(outputs.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
 
         all_predictions = np.array(all_predictions).flatten()
         all_targets = np.array(all_targets).flatten()
