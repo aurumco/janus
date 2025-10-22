@@ -4,6 +4,154 @@ import torch
 import torch.nn as nn
 
 
+class ConfidenceWeightedLoss(nn.Module):
+    """Loss that rewards bold correct predictions and penalizes timidity.
+    
+    Key features:
+    - Rewards predictions that match target magnitude (not just direction)
+    - Heavily penalizes wrong direction
+    - Encourages model to be confident when it should be
+    """
+
+    def __init__(
+        self,
+        wrong_sign_penalty: float = 3.0,
+        magnitude_weight: float = 0.3,
+        epsilon: float = 1e-6,
+    ) -> None:
+        """Initialize ConfidenceWeightedLoss.
+
+        Args:
+            wrong_sign_penalty: Multiplier for wrong direction errors.
+            magnitude_weight: Weight for magnitude matching component.
+            epsilon: Small value for numerical stability.
+        """
+        super().__init__()
+        self.wrong_sign_penalty = wrong_sign_penalty
+        self.magnitude_weight = magnitude_weight
+        self.epsilon = epsilon
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute confidence-weighted loss.
+
+        Args:
+            predictions: Model predictions (batch_size, 1).
+            targets: True targets (batch_size, 1).
+
+        Returns:
+            Combined loss value.
+        """
+        # Base MSE
+        mse = (predictions - targets) ** 2
+        
+        # Direction component
+        pred_signs = torch.sign(predictions + self.epsilon)
+        target_signs = torch.sign(targets + self.epsilon)
+        correct_sign = (pred_signs == target_signs).float()
+        
+        # Weight based on direction correctness
+        direction_weights = torch.where(
+            correct_sign > 0.5,
+            torch.ones_like(mse),
+            torch.full_like(mse, self.wrong_sign_penalty)
+        )
+        
+        # Magnitude matching: Reward predictions that match target magnitude
+        # Use ratio of magnitudes (clamped to avoid extreme values)
+        pred_mag = torch.abs(predictions) + self.epsilon
+        target_mag = torch.abs(targets) + self.epsilon
+        
+        # Ratio should be close to 1.0 for good predictions
+        magnitude_ratio = torch.clamp(pred_mag / target_mag, 0.1, 10.0)
+        
+        # Penalize deviation from 1.0 (both over and under prediction)
+        magnitude_penalty = torch.abs(torch.log(magnitude_ratio))
+        
+        # Combined loss
+        directional_loss = torch.mean(direction_weights * mse)
+        magnitude_loss = torch.mean(magnitude_penalty)
+        
+        total_loss = directional_loss + self.magnitude_weight * magnitude_loss
+        
+        return total_loss
+
+
+class AdaptiveSignLoss(nn.Module):
+    """Adaptive loss that adjusts penalties based on target magnitude.
+    
+    Large movements should have larger predictions.
+    Small movements can be more conservative.
+    """
+
+    def __init__(
+        self,
+        base_penalty: float = 2.5,
+        magnitude_threshold: float = 0.005,
+        epsilon: float = 1e-6,
+    ) -> None:
+        """Initialize AdaptiveSignLoss.
+
+        Args:
+            base_penalty: Base multiplier for wrong sign.
+            magnitude_threshold: Threshold for "significant" movements.
+            epsilon: Small value for numerical stability.
+        """
+        super().__init__()
+        self.base_penalty = base_penalty
+        self.magnitude_threshold = magnitude_threshold
+        self.epsilon = epsilon
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute adaptive sign loss.
+
+        Args:
+            predictions: Model predictions (batch_size, 1).
+            targets: True targets (batch_size, 1).
+
+        Returns:
+            Adaptive loss value.
+        """
+        # Base squared errors
+        squared_errors = (predictions - targets) ** 2
+        
+        # Check sign correctness
+        pred_signs = torch.sign(predictions + self.epsilon)
+        target_signs = torch.sign(targets + self.epsilon)
+        correct_sign = (pred_signs == target_signs).float()
+        
+        # Adaptive penalty based on target magnitude
+        target_magnitude = torch.abs(targets)
+        
+        # For large movements, wrong sign is very bad
+        # For small movements, wrong sign is less critical
+        adaptive_penalty = self.base_penalty * (1.0 + target_magnitude / self.magnitude_threshold)
+        adaptive_penalty = torch.clamp(adaptive_penalty, self.base_penalty, self.base_penalty * 3.0)
+        
+        # Apply penalties
+        weights = torch.where(
+            correct_sign > 0.5,
+            torch.ones_like(squared_errors),
+            adaptive_penalty
+        )
+        
+        # Additional component: Encourage bold predictions for large targets
+        boldness_bonus = torch.zeros_like(squared_errors)
+        large_target_mask = target_magnitude > self.magnitude_threshold
+        pred_magnitude = torch.abs(predictions)
+        
+        # If target is large but prediction is small, add penalty
+        timid_mask = large_target_mask & (pred_magnitude < self.magnitude_threshold)
+        boldness_bonus = torch.where(
+            timid_mask,
+            squared_errors * 0.5,  # 50% additional penalty for being timid
+            boldness_bonus
+        )
+        
+        weighted_loss = torch.mean(weights * squared_errors + boldness_bonus)
+        
+        return weighted_loss
+
+
 class DirectionalMSELoss(nn.Module):
     """MSE Loss with directional penalty and variance regularization.
     
