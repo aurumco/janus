@@ -1,13 +1,13 @@
 model:
   name: "Janus"
-  d_model: 128
+  d_model: 144
   d_state: 16
   d_conv: 4
   n_layers: 4
   dropout: 0.25
   num_classes: 1
-  head_type: "factorized"   # "mlp" or "factorized"
-  max_scale: 0.08           # clamp scale head to ±8% (optional)
+  quantiles: [0.1, 0.5, 0.9]
+  use_attention: true
 
 data:
   input_window: 64
@@ -30,40 +30,29 @@ data:
   train_ratio: 0.75
   val_ratio: 0.15
   test_ratio: 0.10
-  batch_size: 160
+  batch_size: 128
   num_workers: 4
   shuffle_train: true
 
 training:
   epochs: 150
-  learning_rate: 0.0006
-  weight_decay: 0.008
+  learning_rate: 0.0005
+  weight_decay: 0.01
   optimizer: "adamw"
   scheduler: "reduce_on_plateau"
-  scheduler_patience: 10
+  scheduler_patience: 12
   scheduler_factor: 0.7
   scheduler_min_lr: 0.00001
   warmup_epochs: 0
-  gradient_clip: 1.5
-  early_stopping_patience: 15
+  gradient_clip: 1.0
+  early_stopping_patience: 20
   early_stopping_min_delta: 0.000001
   save_best_only: true
-  # Exponential Moving Average of weights for stabler validation/exports
-  ema:
-    use: true
-    decay: 0.995
-  # Overfitting guard: when generalization gap grows, refresh the head
-  overfit_guard:
-    enabled: true
-    gap_threshold: 1.7     # val_loss / train_loss to trigger
-    patience: 3            # epochs of sustained gap before action
-    freeze_epochs: 2       # freeze backbone after reset to refit the head
-    head_reinit: true      # reinitialize prediction head
-    lr_boost: 1.5          # temporary LR multiplier for fast adaptation
   
 loss:
-  type: "huber"
-  huber_delta: 1.0   # higher delta allows bolder residuals
+  type: "multi_quantile"
+  quantiles: [0.1, 0.5, 0.9]
+  direction_weight: 2.0
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"

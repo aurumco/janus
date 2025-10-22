@@ -29,6 +29,7 @@ from src.training.losses import (
     SignWeightedMSELoss,
     ConfidenceWeightedLoss,
     AdaptiveSignLoss,
+    MultiQuantileLoss,
 )
 from src.utils.helpers import get_device, save_model_architecture, set_seed
 
@@ -151,16 +152,20 @@ def main() -> None:
     print(f"Val batches: {len(data_loaders['val'])}")
     print(f"Test batches: {len(data_loaders['test'])}\n")
 
+    # Check if using quantile regression
+    quantiles = config.get('model.quantiles', None)
+    use_attention = config.get('model.use_attention', False)
+    
     model = MambaRegressor(
-        input_dim=config.get('data.num_features'),
+        num_features=config.get('data.num_features'),
         d_model=config.get('model.d_model'),
         d_state=config.get('model.d_state'),
         d_conv=config.get('model.d_conv'),
         n_layers=config.get('model.n_layers'),
-        output_dim=config.get('model.num_classes', 1),
+        num_classes=config.get('model.num_classes', 1),
         dropout=config.get('model.dropout'),
-        head_type=config.get('model.head_type', 'mlp'),
-        max_scale=config.get('model.max_scale', None),
+        quantiles=quantiles,
+        use_attention=use_attention,
     )
     
     if torch.cuda.device_count() > 1:
@@ -214,6 +219,14 @@ def main() -> None:
         penalty = config.get('loss.underestimate_penalty', 1.5)
         criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
         print(f"Using Asymmetric MSE Loss (penalty={penalty})")
+    elif loss_type == 'multi_quantile':
+        quantiles = config.get('loss.quantiles', [0.1, 0.5, 0.9])
+        direction_weight = config.get('loss.direction_weight', 1.0)
+        criterion = MultiQuantileLoss(
+            quantiles=quantiles,
+            direction_weight=direction_weight,
+        )
+        print(f"Using Multi-Quantile Loss (quantiles={quantiles}, dir_w={direction_weight})")
     else:
         huber_delta = config.get('loss.huber_delta', 0.5)
         criterion = nn.HuberLoss(delta=huber_delta)
@@ -254,9 +267,6 @@ def main() -> None:
         early_stopping_min_delta=config.get('training.early_stopping_min_delta', 0.0001),
         use_amp=config.get('device.mixed_precision', True),
         warmup_epochs=config.get('training.warmup_epochs', 0),
-        overfit_guard=config.get('training.overfit_guard', {}),
-        use_ema=config.get('training.ema.use', False),
-        ema_decay=config.get('training.ema.decay', 0.995),
     )
 
     if args.resume:

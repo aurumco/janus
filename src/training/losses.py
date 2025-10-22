@@ -1,5 +1,7 @@
 """Custom loss functions for regression with directional awareness."""
 
+from typing import List
+
 import torch
 import torch.nn as nn
 
@@ -262,6 +264,68 @@ class AsymmetricMSELoss(nn.Module):
         loss = torch.mean(weighted_errors)
 
         return loss
+
+
+class MultiQuantileLoss(nn.Module):
+    """Multi-quantile loss for probabilistic predictions with uncertainty.
+    
+    Predicts multiple quantiles (e.g., 0.1, 0.5, 0.9) and penalizes based on
+    quantile regression loss. Also includes directional penalty for median.
+    """
+
+    def __init__(
+        self,
+        quantiles: List[float] = [0.1, 0.5, 0.9],
+        direction_weight: float = 1.0,
+        epsilon: float = 1e-6,
+    ) -> None:
+        """Initialize MultiQuantileLoss.
+
+        Args:
+            quantiles: List of quantiles to predict.
+            direction_weight: Weight for directional penalty on median.
+            epsilon: Small value for numerical stability.
+        """
+        super().__init__()
+        self.quantiles = torch.tensor(quantiles)
+        self.direction_weight = direction_weight
+        self.epsilon = epsilon
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute multi-quantile loss.
+
+        Args:
+            predictions: Model predictions (batch_size, num_quantiles).
+            targets: True targets (batch_size, 1).
+
+        Returns:
+            Combined quantile + directional loss.
+        """
+        # Move quantiles to same device as predictions
+        quantiles = self.quantiles.to(predictions.device)
+        
+        # Expand targets to match predictions shape
+        targets_expanded = targets.expand_as(predictions)
+        
+        # Quantile loss for each quantile
+        errors = targets_expanded - predictions
+        quantile_loss = torch.mean(
+            torch.max(quantiles * errors, (quantiles - 1) * errors)
+        )
+        
+        # Directional penalty on median (middle quantile)
+        median_idx = len(self.quantiles) // 2
+        median_pred = predictions[:, median_idx:median_idx+1]
+        
+        pred_signs = torch.sign(median_pred + self.epsilon)
+        target_signs = torch.sign(targets + self.epsilon)
+        wrong_direction = (pred_signs != target_signs).float()
+        
+        direction_penalty = torch.mean(wrong_direction * torch.abs(median_pred - targets))
+        
+        total_loss = quantile_loss + self.direction_weight * direction_penalty
+        
+        return total_loss
 
 
 class QuantileLoss(nn.Module):
