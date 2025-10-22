@@ -68,10 +68,11 @@ class MambaRegressor(nn.Module):
         ])
 
         if self.use_attention:
-            self.attention = nn.MultiHeadAttention(
+            self.attention = nn.MultiheadAttention(
                 embed_dim=d_model,
                 num_heads=8,
                 dropout=dropout,
+                batch_first=True,
             )
             self.attention_norm = nn.LayerNorm(d_model)
 
