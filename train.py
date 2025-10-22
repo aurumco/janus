@@ -159,6 +159,8 @@ def main() -> None:
         n_layers=config.get('model.n_layers'),
         output_dim=config.get('model.num_classes', 1),
         dropout=config.get('model.dropout'),
+        head_type=config.get('model.head_type', 'mlp'),
+        max_scale=config.get('model.max_scale', None),
     )
     
     if torch.cuda.device_count() > 1:
@@ -252,6 +254,9 @@ def main() -> None:
         early_stopping_min_delta=config.get('training.early_stopping_min_delta', 0.0001),
         use_amp=config.get('device.mixed_precision', True),
         warmup_epochs=config.get('training.warmup_epochs', 0),
+        overfit_guard=config.get('training.overfit_guard', {}),
+        use_ema=config.get('training.ema.use', False),
+        ema_decay=config.get('training.ema.decay', 0.995),
     )
 
     if args.resume:

@@ -1,8 +1,14 @@
-"""Training module for Mamba regressor."""
+"""Training module for Mamba regressor.
+
+Adds optional training-time regularization features:
+- Exponential Moving Average (EMA) of weights for evaluation stability
+- Overfitting guard: when generalization gap grows, reinitialize head and
+  temporarily freeze backbone to force relearning of patterns
+"""
 
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -35,6 +41,10 @@ class Trainer:
         early_stopping_min_delta: float = 0.0001,
         use_amp: bool = False,
         warmup_epochs: int = 0,
+        # New features
+        overfit_guard: Optional[Dict[str, Any]] = None,
+        use_ema: bool = False,
+        ema_decay: float = 0.995,
     ) -> None:
         """Initialize trainer.
 
@@ -72,6 +82,23 @@ class Trainer:
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_min_delta = early_stopping_min_delta
 
+        # Overfitting guard configuration
+        self.overfit_guard = overfit_guard or {}
+        self.enable_overfit_guard = bool(self.overfit_guard.get("enabled", False))
+        self.gap_threshold = float(self.overfit_guard.get("gap_threshold", 1.6))
+        self.gap_patience = int(self.overfit_guard.get("patience", 3))
+        self.freeze_epochs = int(self.overfit_guard.get("freeze_epochs", 2))
+        self.head_reinit = bool(self.overfit_guard.get("head_reinit", True))
+        self.lr_boost = float(self.overfit_guard.get("lr_boost", 1.0))
+        self._overfit_counter = 0
+        self._freeze_remaining = 0
+
+        # EMA configuration
+        self.use_ema = bool(use_ema)
+        self.ema_decay = float(ema_decay)
+        self._ema_state: Dict[str, torch.Tensor] = {}
+        self._ema_initialized = False
+
         if checkpoint_dir:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -91,6 +118,43 @@ class Trainer:
             'val_loss': [],
             'learning_rate': [],
         }
+
+    # ------------------------ Utilities ------------------------
+
+    def _actual_model(self) -> nn.Module:
+        """Return the underlying model (unwrap DataParallel if present)."""
+        return self.model.module if hasattr(self.model, 'module') else self.model
+
+    def _init_ema(self) -> None:
+        """Initialize EMA state from current model parameters."""
+        if self._ema_initialized or not self.use_ema:
+            return
+        with torch.no_grad():
+            self._ema_state = {
+                k: v.detach().clone()
+                for k, v in self._actual_model().state_dict().items()
+                if isinstance(v, torch.Tensor)
+            }
+        self._ema_initialized = True
+
+    def _ema_update(self) -> None:
+        """Update EMA state after an optimizer step."""
+        if not self.use_ema:
+            return
+        if not self._ema_initialized:
+            self._init_ema()
+        with torch.no_grad():
+            model_state = self._actual_model().state_dict()
+            for k, v in model_state.items():
+                if k in self._ema_state and isinstance(v, torch.Tensor):
+                    self._ema_state[k].mul_(self.ema_decay).add_(v.detach(), alpha=1.0 - self.ema_decay)
+
+    def _swap_model_state(self, new_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Swap current model state with `new_state`, returning the previous state."""
+        model = self._actual_model()
+        prev = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(new_state, strict=False)
+        return prev
 
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train for one epoch.
@@ -146,6 +210,9 @@ class Trainer:
 
             total_loss += loss.item()
 
+            # Update EMA after each optimizer step
+            self._ema_update()
+
         avg_loss = total_loss / len(train_loader)
 
         return {'loss': avg_loss}
@@ -163,6 +230,11 @@ class Trainer:
         self.model.eval()
         total_loss = 0.0
 
+        # Optionally evaluate using EMA weights for more stable validation
+        backup_state: Optional[Dict[str, torch.Tensor]] = None
+        if self.use_ema and self._ema_initialized:
+            backup_state = self._swap_model_state(self._ema_state)
+
         with torch.no_grad():
             for batch_idx, (inputs, targets) in enumerate(val_loader):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -173,6 +245,10 @@ class Trainer:
                 total_loss += loss.item()
 
         avg_loss = total_loss / len(val_loader)
+
+        # Restore original weights if we evaluated with EMA
+        if backup_state is not None:
+            _ = self._swap_model_state(backup_state)
 
         return {'loss': avg_loss}
 
@@ -207,6 +283,16 @@ class Trainer:
 
         for epoch in range(1, epochs + 1):
             epoch_start_time = time.time()
+
+            # If in freeze phase, ensure backbone is frozen
+            if self._freeze_remaining > 0:
+                actual = self._actual_model()
+                if hasattr(actual, 'freeze_backbone'):
+                    actual.freeze_backbone()
+            else:
+                actual = self._actual_model()
+                if hasattr(actual, 'unfreeze_backbone'):
+                    actual.unfreeze_backbone()
 
             train_metrics = self.train_epoch(train_loader, epoch)
             val_metrics = self.validate(val_loader, epoch)
@@ -249,6 +335,36 @@ class Trainer:
             else:
                 self.patience_counter += 1
                 print(f"  ⏳ Patience: {self.patience_counter}/{self.early_stopping_patience}")
+
+            # --- Overfitting guard: monitor generalization gap ---
+            if self.enable_overfit_guard:
+                gap = (val_metrics['loss'] + 1e-12) / (train_metrics['loss'] + 1e-12)
+                if gap >= self.gap_threshold:
+                    self._overfit_counter += 1
+                else:
+                    self._overfit_counter = 0
+
+                if self._overfit_counter >= self.gap_patience and self._freeze_remaining == 0:
+                    print("  ⚠️ Overfitting detected: applying guard (reset head + freeze backbone)")
+                    actual = self._actual_model()
+                    if self.head_reinit and hasattr(actual, 'reinit_head'):
+                        actual.reinit_head()
+                        print("  • Head reinitialized")
+                    if hasattr(actual, 'freeze_backbone'):
+                        actual.freeze_backbone()
+                        print(f"  • Backbone frozen for {self.freeze_epochs} epochs")
+                        self._freeze_remaining = self.freeze_epochs
+                    # Optional LR boost to help the refreshed head adapt quickly
+                    if self.lr_boost and self.lr_boost != 1.0:
+                        for pg in self.optimizer.param_groups:
+                            pg['lr'] = min(pg['lr'] * self.lr_boost, self.initial_lr * 2)
+                        print(f"  • LR boosted temporarily by ×{self.lr_boost:.2f}")
+                    # Reset counter after action
+                    self._overfit_counter = 0
+
+            # Decrement freeze window at epoch end
+            if self._freeze_remaining > 0:
+                self._freeze_remaining -= 1
 
             if self.patience_counter >= self.early_stopping_patience:
                 print(f"\n{'='*50}")
