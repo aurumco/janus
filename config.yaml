@@ -4,12 +4,12 @@ model:
   d_state: 16
   d_conv: 4
   n_layers: 4
-  dropout: 0.20
+  dropout: 0.25
   num_classes: 1
 
 data:
-  input_window: 64
-  num_features: 13
+  input_window: 96
+  num_features: 15
   feature_columns:
     - "RSI_14_M15"
     - "ATR_5_pct_M15"
@@ -19,6 +19,8 @@ data:
     - "obv_M15"
     - "hour_sin"
     - "hour_cos"
+    - "day_of_week_sin"
+    - "day_of_week_cos"
     - "RSI_14_H1"
     - "ADX_14_H1"
     - "EMA_diff_21_H4pct"
@@ -34,23 +36,23 @@ data:
 
 training:
   epochs: 150
-  learning_rate: 0.0007
-  weight_decay: 0.005
+  learning_rate: 0.0006
+  weight_decay: 0.008
   optimizer: "adamw"
   scheduler: "reduce_on_plateau"
-  scheduler_patience: 12
+  scheduler_patience: 10
   scheduler_factor: 0.7
   scheduler_min_lr: 0.00001
   warmup_epochs: 0
-  gradient_clip: 2.0
-  early_stopping_patience: 10
+  gradient_clip: 1.5
+  early_stopping_patience: 15
   early_stopping_min_delta: 0.000001
   save_best_only: true
   
 loss:
   type: "confidence_weighted"
-  wrong_sign_penalty: 2.8
-  magnitude_weight: 0.6
+  wrong_sign_penalty: 3.0
+  magnitude_weight: 0.4
 
 paths:
   data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
@@ -81,4 +83,4 @@ evaluation:
   plot_residuals: true
   plot_training_curves: true
 
-seed: 42
+seed: 47

@@ -165,6 +165,13 @@ class MultiTimeframeProcessor:
         df_m15['hour_of_day'] = df_m15.index.hour
         df_m15['hour_sin'] = hour_sin
         df_m15['hour_cos'] = hour_cos
+        
+        day_of_week_sin, day_of_week_cos = self.indicator_calc.calculate_cyclical_time_features(
+            df_m15.index, period=7, time_component='dayofweek'
+        )
+        df_m15['day_of_week'] = df_m15.index.dayofweek
+        df_m15['day_of_week_sin'] = day_of_week_sin
+        df_m15['day_of_week_cos'] = day_of_week_cos
 
         return df_m15
 
@@ -208,7 +215,7 @@ class MultiTimeframeProcessor:
         features = [
             'RSI_14_M15', 'ATR_5_pct_M15', 'dist_from_ema_10_M15', 'ema10_slope_M15',
             'volume_oscillator_M15', 'obv_M15',
-            'hour_sin', 'hour_cos',
+            'hour_sin', 'hour_cos', 'day_of_week_sin', 'day_of_week_cos',
             'RSI_14_H1', 'ADX_14_H1', 'EMA_diff_21_H4pct',
             'RSI_15_x_NYHours',
         ]

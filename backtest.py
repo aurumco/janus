@@ -5,60 +5,57 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
+    ort = None
 
 from backtest.config import BacktestConfig
 from backtest.engine import BacktestEngine
 from backtest.reporter import BacktestReporter
 from src.config.config_loader import ConfigLoader
-from src.models.mamba_regressor import MambaRegressor
-from src.utils.helpers import get_device
 
 
-def load_model(checkpoint_path: str, config: ConfigLoader, device: torch.device) -> torch.nn.Module:
-    """Load trained model from checkpoint.
+from backtest.model_loader import load_model_auto, ModelInferenceWrapper
+
+
+def load_model(checkpoint_path: str, config: ConfigLoader) -> ModelInferenceWrapper:
+    """Load trained model from checkpoint (supports PyTorch, TorchScript, ONNX).
 
     Args:
-        checkpoint_path: Path to model checkpoint.
+        checkpoint_path: Path to model checkpoint or directory.
         config: Configuration loader.
-        device: Device to load model on.
 
     Returns:
-        Loaded model.
+        ModelInferenceWrapper instance.
     """
-    model = MambaRegressor(
-        input_dim=config.get('data.num_features'),
-        d_model=config.get('model.d_model'),
-        d_state=config.get('model.d_state'),
-        d_conv=config.get('model.d_conv'),
-        n_layers=config.get('model.n_layers'),
-        output_dim=config.get('model.num_classes', 1),
-        dropout=config.get('model.dropout'),
-    ).to(device)
-
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-
-    return model
+    return load_model_auto(checkpoint_path, config)
 
 
 def generate_predictions(
-    model: torch.nn.Module,
+    model: ModelInferenceWrapper,
     data: pd.DataFrame,
     feature_columns: list,
     sequence_length: int,
-    device: torch.device,
     entry_threshold: float = 0.005,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate regression predictions and convert to trading signals.
 
     Args:
-        model: Trained model.
+        model: Model wrapper (supports PyTorch, TorchScript, ONNX).
         data: DataFrame with features.
         feature_columns: List of feature column names.
         sequence_length: Input sequence length.
-        device: Device for inference.
         entry_threshold: Minimum absolute predicted change to enter (e.g., 0.5%).
 
     Returns:
@@ -69,26 +66,21 @@ def generate_predictions(
     predicted_changes = []
     signals = []
 
-    with torch.no_grad():
-        for i in range(sequence_length - 1, len(data)):
-            sequence = data[feature_columns].iloc[i - sequence_length + 1:i + 1].values
-            sequence_tensor = torch.FloatTensor(sequence).unsqueeze(0).to(device)
+    for i in range(sequence_length - 1, len(data)):
+        sequence = data[feature_columns].iloc[i - sequence_length + 1:i + 1].values
+        
+        pred_change = model.predict(sequence)
+        
+        if abs(pred_change) < entry_threshold:
+            signal = 0
+        elif pred_change > entry_threshold:
+            signal = 1
+        else:
+            signal = -1
+        
+        predicted_changes.append(pred_change)
+        signals.append(signal)
 
-            output = model(sequence_tensor)
-            pred_change = output.item()
-            
-            # Convert prediction to trading signal
-            if abs(pred_change) < entry_threshold:
-                signal = 0  # Neutral - avoid ranging markets
-            elif pred_change > entry_threshold:
-                signal = 1  # Long
-            else:
-                signal = -1  # Short
-            
-            predicted_changes.append(pred_change)
-            signals.append(signal)
-
-    # Padding for first sequence_length-1 samples
     padding_signal = [0] * (sequence_length - 1)
     padding_change = [0.0] * (sequence_length - 1)
     
@@ -110,10 +102,9 @@ def main() -> None:
     args = parser.parse_args()
 
     config = ConfigLoader(args.config)
-    device = get_device(use_cuda=config.get('device.use_cuda', True))
 
     print(f"\nLoading model from {args.checkpoint}...")
-    model = load_model(args.checkpoint, config, device)
+    model = load_model(args.checkpoint, config)
 
     print(f"Loading data from {args.data}...")
     data = pd.read_parquet(args.data)
@@ -132,19 +123,25 @@ def main() -> None:
         backtest_data,
         config.get('data.feature_columns'),
         config.get('data.input_window'),
-        device,
         entry_threshold=args.entry_threshold,
     )
 
     print("Loading OHLCV data for backtest...")
     try:
-        ohlcv_raw = pd.read_csv('dataset/btc.csv')
-        ohlcv_raw.columns = ohlcv_raw.columns.str.lower()
+        ohlcv_raw = pd.read_csv('dataset/BTCUSDT.csv', header=None)
+        
+        column_names = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                       'taker_buy_quote', 'taker_buy_base', 'quote_volume', 'num_trades']
+        ohlcv_raw.columns = column_names[:len(ohlcv_raw.columns)]
+        ohlcv_raw = ohlcv_raw[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        
         timestamps = pd.to_numeric(ohlcv_raw['timestamp'], errors='coerce')
         unit = 'ms' if timestamps.max() > 1e12 else 's'
         ohlcv_raw['timestamp'] = pd.to_datetime(timestamps, unit=unit, errors='coerce')
         ohlcv_raw.set_index('timestamp', inplace=True)
-        ohlcv_raw = ohlcv_raw.resample('15min').agg({
+        
+        timeframe = config.get('data.base_timeframe', '30min')
+        ohlcv_raw = ohlcv_raw.resample(timeframe).agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -156,14 +153,38 @@ def main() -> None:
         ohlcv_data = ohlcv_data[['open', 'high', 'low', 'close', 'volume']]
         
     except FileNotFoundError:
-        print("Warning: btc.csv not found, using synthetic OHLCV from dataset index")
-        ohlcv_data = pd.DataFrame({
-            'open': backtest_data.index.to_series().shift(1),
-            'high': backtest_data.index.to_series().shift(1),
-            'low': backtest_data.index.to_series().shift(1),
-            'close': backtest_data.index.to_series(),
-            'volume': 1000.0,
-        })
+        print("Warning: BTCUSDT.csv not found, trying alternative paths...")
+        try:
+            ohlcv_raw = pd.read_csv('dataset/btc.csv', header=None)
+            column_names = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            ohlcv_raw.columns = column_names[:len(ohlcv_raw.columns)]
+            ohlcv_raw = ohlcv_raw[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+            
+            timestamps = pd.to_numeric(ohlcv_raw['timestamp'], errors='coerce')
+            unit = 'ms' if timestamps.max() > 1e12 else 's'
+            ohlcv_raw['timestamp'] = pd.to_datetime(timestamps, unit=unit, errors='coerce')
+            ohlcv_raw.set_index('timestamp', inplace=True)
+            
+            timeframe = config.get('data.base_timeframe', '30min')
+            ohlcv_raw = ohlcv_raw.resample(timeframe).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            }).dropna()
+            
+            ohlcv_data = ohlcv_raw.loc[backtest_data.index].copy()
+            ohlcv_data = ohlcv_data[['open', 'high', 'low', 'close', 'volume']]
+        except:
+            print("Warning: No CSV found, using synthetic OHLCV from dataset index")
+            ohlcv_data = pd.DataFrame({
+                'open': backtest_data.index.to_series().shift(1),
+                'high': backtest_data.index.to_series().shift(1),
+                'low': backtest_data.index.to_series().shift(1),
+                'close': backtest_data.index.to_series(),
+                'volume': 1000.0,
+            })
 
     backtest_config = BacktestConfig(
         initial_capital_usd=args.initial_capital,

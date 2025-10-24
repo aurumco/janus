@@ -150,19 +150,25 @@ class IndicatorCalculator:
     @staticmethod
     def calculate_cyclical_time_features(
         timestamps: pd.DatetimeIndex,
-        period: int = 24
+        period: int = 24,
+        time_component: str = 'hour'
     ) -> tuple[pd.Series, pd.Series]:
         """Calculate cyclical time features using sine and cosine.
 
         Args:
             timestamps: DateTime index.
-            period: Period for cyclical encoding (default 24 for hours).
+            period: Period for cyclical encoding (default 24 for hours, 7 for days).
+            time_component: Which time component to encode ('hour' or 'dayofweek').
 
         Returns:
             Tuple of (sin_values, cos_values).
         """
-        hour_of_day = timestamps.hour
-        sin_values = np.sin(2 * np.pi * hour_of_day / period)
-        cos_values = np.cos(2 * np.pi * hour_of_day / period)
+        if time_component == 'dayofweek':
+            time_values = timestamps.dayofweek
+        else:
+            time_values = timestamps.hour
+            
+        sin_values = np.sin(2 * np.pi * time_values / period)
+        cos_values = np.cos(2 * np.pi * time_values / period)
 
         return pd.Series(sin_values, index=timestamps), pd.Series(cos_values, index=timestamps)
