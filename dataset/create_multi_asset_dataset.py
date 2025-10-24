@@ -47,7 +47,9 @@ except Exception:
             zero_range = np.isnan(self.data_range_) | (self.data_range_ == 0)
             scale = np.divide((fr_max - fr_min), self.data_range_, out=np.zeros_like(self.data_range_, dtype=float), where=~zero_range)
             min_adj = np.where(zero_range | np.isnan(self.data_min_), 0.0, self.data_min_)
-            X_std = (arr - min_adj) * scale + fr_min
+            with np.errstate(invalid='ignore'):
+                X_std = (arr - min_adj) * scale + fr_min
+            X_std = np.nan_to_num(X_std, nan=fr_min, posinf=fr_max, neginf=fr_min)
             if X_std.ndim == 2:
                 X_std[:, zero_range] = fr_min
             return X_std
@@ -432,7 +434,7 @@ class MultiAssetDatasetBuilder:
         Returns:
             DataFrame with features and labels.
         """
-        self._log(f"[4/5] Calculating features and labels...")
+        self._log(f"\n[4/5] Calculating features and labels...")
         
         all_features = []
         
@@ -595,6 +597,16 @@ class MultiAssetDatasetBuilder:
         self._log(f"- Features: {len(features)}")
         self._log(f"- Assets: {dataset['asset_id'].nunique()}")
         self._log(f"- Elapsed: {elapsed_time:.2f}s")
+
+        if 'target' not in dataset.columns:
+            self._log("- Feature stats (pre-train):")
+            for feat in features[:5]:
+                if feat in dataset.columns:
+                    vals = dataset[feat].dropna()
+                    if len(vals) > 0:
+                        self._log(f"  - {feat}: mean={vals.mean():.4f}, std={vals.std():.4f}")
+            if len(features) > 5:
+                self._log(f"  ... ({len(features) - 5} more features)")
 
         if 'target' in dataset.columns:
             target_values = dataset['target']
