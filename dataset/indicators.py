@@ -16,7 +16,7 @@ class IndicatorCalculator:
         avg_loss = loss.ewm(alpha=1/length, adjust=False, min_periods=length).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(method='bfill')
+        return rsi.bfill()
 
     @staticmethod
     def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
@@ -44,7 +44,7 @@ class IndicatorCalculator:
         minus_di = 100 * (minus_dm.ewm(alpha=1/length, adjust=False, min_periods=length).mean() / atr.replace(0, np.nan))
         dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).abs()).replace([np.inf, -np.inf], np.nan)
         adx = dx.ewm(alpha=1/length, adjust=False, min_periods=length).mean()
-        return adx.fillna(method='bfill')
+        return adx.bfill()
 
     @staticmethod
     def calculate_pvo(volume: pd.Series, fast: int, slow: int, signal: int) -> pd.Series:
@@ -62,21 +62,54 @@ class IndicatorCalculator:
 
     @staticmethod
     def calculate_garch_volatility(returns: pd.Series) -> float:
-        if returns.isnull().any() or len(returns) < 50:
+        """Backward-compatible single-window estimator using EWMA as proxy.
+
+        This returns the last EWMA volatility over the provided window.
+        """
+        if returns.isnull().all() or len(returns) < 2:
             return np.nan
-        try:
-            from arch import arch_model
-        except Exception:
-            return np.nan
-        try:
-            model = arch_model(returns * 100, vol='Garch', p=1, q=1, rescale=False)
-            result = model.fit(disp='off', show_warning=False)
-            if getattr(result, 'convergence_flag', 1) == 0:
-                forecast = result.forecast(horizon=1)
-                return float(np.sqrt(forecast.variance.iloc[-1, 0]))
-            return np.nan
-        except Exception:
-            return np.nan
+        r = returns.fillna(0.0).values
+        lam = 0.94
+        var = np.var(r, ddof=1) if len(r) > 10 else np.var(r)
+        for i in range(1, len(r)):
+            var = lam * var + (1 - lam) * (r[i-1] ** 2)
+        return float(np.sqrt(max(var, 0.0)))
+
+    @staticmethod
+    def calculate_garch_volatility_series(
+        returns: pd.Series | np.ndarray,
+        lam: float = 0.94,
+        warmup: int = 240
+    ) -> pd.Series:
+        """Compute EWMA volatility series as a GARCH(1,1)-style proxy.
+
+        Args:
+            returns: Return series (e.g., log returns).
+            lam: Decay factor (0.94 is RiskMetrics default for daily data).
+            warmup: Warm-up window to seed initial variance.
+
+        Returns:
+            Volatility (sigma) series aligned with input index.
+        """
+        if isinstance(returns, pd.Series):
+            idx = returns.index
+            r = returns.fillna(0.0).values.astype(float)
+        else:
+            idx = pd.RangeIndex(len(returns))
+            r = np.nan_to_num(np.asarray(returns, dtype=float), nan=0.0)
+        n = len(r)
+        if n == 0:
+            return pd.Series([], dtype=float)
+        sigma2 = np.full(n, np.nan, dtype=float)
+        start = min(max(warmup, 10), n-1)
+        seed_var = np.var(r[max(0, start-warmup):start+1], ddof=1) if start >= 1 else np.var(r)
+        if not np.isfinite(seed_var) or seed_var < 0:
+            seed_var = 0.0
+        sigma2[start] = seed_var
+        for t in range(start+1, n):
+            sigma2[t] = lam * sigma2[t-1] + (1 - lam) * (r[t-1] ** 2)
+        sigma = np.sqrt(np.clip(sigma2, 0.0, np.inf))
+        return pd.Series(sigma, index=idx)
 
     @staticmethod
     def calculate_cyclical_time_features(timestamps: pd.DatetimeIndex, period: int = 24, time_component: str = 'hour') -> tuple[pd.Series, pd.Series]:

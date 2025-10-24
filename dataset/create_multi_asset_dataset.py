@@ -561,11 +561,11 @@ class MultiAssetDatasetBuilder:
         ny_hours_mask = ((df.index.hour >= 13) & (df.index.hour <= 17)).astype(int)
         df['RSI_15_x_NYHours'] = df['RSI_14_M15'] * ny_hours_mask
         
-        # GARCH volatility (optional, computationally expensive)
+        # GARCH volatility (proxy via EWMA series)
         if self.config.enable_garch:
             df['log_return'] = np.log(df['close'] / df['close'].shift(1))
-            df['garch_volatility'] = df['log_return'].rolling(window=240).apply(
-                calc.calculate_garch_volatility, raw=False
+            df['garch_volatility'] = calc.calculate_garch_volatility_series(
+                df['log_return'], lam=0.94, warmup=self.config.garch_roll_window
             )
             df['garch_volatility'] = df['garch_volatility'].ffill().bfill()
         
