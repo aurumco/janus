@@ -37,6 +37,13 @@ except Exception:
             if self.data_min_ is None or self.data_range_ is None:
                 raise ValueError("Scaler not fitted")
             fr_min, fr_max = self.feature_range
+            col_min = np.where(np.isnan(self.data_min_), 0.0, self.data_min_)
+            if arr.ndim == 2:
+                nan_mask = np.isnan(arr)
+                arr = np.where(nan_mask, col_min, arr)
+            else:
+                if np.isnan(arr).any():
+                    arr = np.nan_to_num(arr, nan=float(fr_min))
             zero_range = np.isnan(self.data_range_) | (self.data_range_ == 0)
             scale = np.divide((fr_max - fr_min), self.data_range_, out=np.zeros_like(self.data_range_, dtype=float), where=~zero_range)
             min_adj = np.where(zero_range | np.isnan(self.data_min_), 0.0, self.data_min_)
@@ -100,7 +107,7 @@ class MultiAssetDatasetBuilder:
         
         if kaggle_input.exists():
             search_paths.append(kaggle_input)
-            self._log("✓ Detected Kaggle environment")
+            self._log("\n✓ Detected Kaggle environment")
         
         if kaggle_working.exists():
             search_paths.append(kaggle_working)
@@ -328,8 +335,8 @@ class MultiAssetDatasetBuilder:
         """
         start_time = time.time()
 
-        self._log("  • JANUS MULTI-ASSET DATASET BUILDER")
-        self._log(f"Mode: {mode.upper()}")
+        self._log("\n• JANUS MULTI-ASSET DATASET BUILDER")
+        self._log(f"\nMode: {mode.upper()}")
         
         # Discover assets
         assets = self.discover_assets()
@@ -392,7 +399,7 @@ class MultiAssetDatasetBuilder:
         df_combined = pd.concat(asset_dfs, axis=0)
         
         # Sort by timestamp
-        self._log(f"[3/5] Sorting by timestamp...")
+        self._log(f"\n[3/5] Sorting by timestamp...")
         df_combined.sort_index(inplace=True)
         
         self._log(f"  Total samples: {len(df_combined):,}")
@@ -583,24 +590,31 @@ class MultiAssetDatasetBuilder:
         features: list,
         elapsed_time: float
     ) -> None:
-        self._log("summary")
-        self._log(f"- samples: {len(dataset):,}")
-        self._log(f"- features: {len(features)}")
-        self._log(f"- assets: {dataset['asset_id'].nunique()}")
-        self._log(f"- elapsed: {elapsed_time:.2f}s")
+        self._log("\nSummary:")
+        self._log(f"- Samples: {len(dataset):,}")
+        self._log(f"- Features: {len(features)}")
+        self._log(f"- Assets: {dataset['asset_id'].nunique()}")
+        self._log(f"- Elapsed: {elapsed_time:.2f}s")
 
         if 'target' in dataset.columns:
             target_values = dataset['target']
-            self._log("- target:")
-            self._log(f"  - mean: {target_values.mean():.4f} ({target_values.mean()*100:.2f}%)")
-            self._log(f"  - std: {target_values.std():.4f} ({target_values.std()*100:.2f}%)")
-            self._log(f"  - min: {target_values.min():.4f} ({target_values.min()*100:.2f}%)")
-            self._log(f"  - max: {target_values.max():.4f} ({target_values.max()*100:.2f}%)")
+            self._log("- Target:")
+            self._log(f"  - Mean: {target_values.mean():.4f} ({target_values.mean()*100:.2f}%)")
+            self._log(f"  - Std: {target_values.std():.4f} ({target_values.std()*100:.2f}%)")
+            self._log(f"  - Min: {target_values.min():.4f} ({target_values.min()*100:.2f}%)")
+            self._log(f"  - Max: {target_values.max():.4f} ({target_values.max()*100:.2f}%)")
+            self._log(f"  - Median: {target_values.median():.4f} ({target_values.median()*100:.2f}%)")
+            q25 = target_values.quantile(0.25)
+            q75 = target_values.quantile(0.75)
+            self._log(f"  - Q25: {q25:.4f} ({q25*100:.2f}%)")
+            self._log(f"  - Q75: {q75:.4f} ({q75*100:.2f}%)")
             positive_samples = (target_values > 0).sum()
             negative_samples = (target_values < 0).sum()
             total = len(target_values)
-            self._log(f"  - positive: {positive_samples:6,} ({100*positive_samples/total:5.2f}%)")
-            self._log(f"  - negative: {negative_samples:6,} ({100*negative_samples/total:5.2f}%)")
+            self._log(f"  - Positive: {positive_samples:6,} ({100*positive_samples/total:5.2f}%)")
+            self._log(f"  - Negative: {negative_samples:6,} ({100*negative_samples/total:5.2f}%)")
+            neutral_samples = total - positive_samples - negative_samples
+            self._log(f"  - Neutral: {neutral_samples:6,} ({100*neutral_samples/total:5.2f}%)")
 
     def save(self, dataset: pd.DataFrame, scaler: MinMaxScaler, mode: str) -> None:
         """Save dataset and scaler to disk.
@@ -610,24 +624,38 @@ class MultiAssetDatasetBuilder:
             scaler: Fitted scaler to save.
             mode: Dataset mode for filename.
         """
-        # Update config paths based on mode
         self.config.mode = mode
         self.config._configure_paths()
-        
+
+        base_dir = Path("outputs") / "datasets" / mode
+        base_dir.mkdir(parents=True, exist_ok=True)
+
         saved_files = []
-        
+        filename_parquet = Path(self.config.parquet_path).name
+        filename_csv = Path(self.config.csv_path).name
+        filename_scaler = Path(self.config.scaler_path).name
+
         if self.config.save_parquet:
-            dataset.round(self.config.round_decimals).to_parquet(self.config.parquet_path)
-            saved_files.append(self.config.parquet_path)
-            self._log(f"Saved: {self.config.parquet_path}")
-        
+            out_dir = base_dir / "parquet"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / filename_parquet
+            dataset.round(self.config.round_decimals).to_parquet(out_path)
+            saved_files.append(out_path)
+            self._log(f"Saved: {out_path}")
+
         if self.config.save_csv:
-            dataset.round(self.config.round_decimals).to_csv(self.config.csv_path)
-            saved_files.append(self.config.csv_path)
-            self._log(f"Saved: {self.config.csv_path}")
-        
-        joblib.dump(scaler, self.config.scaler_path)
-        self._log(f"Saved: {self.config.scaler_path}")
+            out_dir = base_dir / "csv"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / filename_csv
+            dataset.round(self.config.round_decimals).to_csv(out_path)
+            saved_files.append(out_path)
+            self._log(f"Saved: {out_path}")
+
+        scaler_dir = base_dir / "scaler"
+        scaler_dir.mkdir(parents=True, exist_ok=True)
+        scaler_path = scaler_dir / filename_scaler
+        joblib.dump(scaler, scaler_path)
+        self._log(f"Saved: {scaler_path}")
 
 
 def get_user_choice(prompt: str, options: List[str], default: str, timeout: int = 10) -> str:
@@ -648,7 +676,6 @@ def get_user_choice(prompt: str, options: List[str], default: str, timeout: int 
     print(f"\nDefault: {default} (timeout in {timeout}s)")
     print("Choice: ", end='', flush=True)
     
-    # Use select for timeout on Unix systems
     if sys.platform != 'win32':
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
         if ready:
@@ -657,13 +684,11 @@ def get_user_choice(prompt: str, options: List[str], default: str, timeout: int 
             print(f"\n⏱ Timeout! Using default: {default}")
             return default
     else:
-        # Windows fallback (no timeout)
         try:
             choice = input()
         except:
             choice = ""
     
-    # Parse choice
     if not choice:
         return default
     
@@ -674,7 +699,6 @@ def get_user_choice(prompt: str, options: List[str], default: str, timeout: int 
     except ValueError:
         pass
     
-    # Check if choice matches an option
     choice_lower = choice.lower()
     for opt in options:
         if opt.lower().startswith(choice_lower):
@@ -744,11 +768,9 @@ Examples:
             timeout=10
         )
     
-    # Configure format settings
     save_parquet = format_choice in ["parquet", "both"]
     save_csv = format_choice in ["csv", "both"]
     
-    # Build dataset(s)
     config = DatasetConfig()
     config.dataset_dir = args.dataset_dir
     config.save_parquet = save_parquet
@@ -783,7 +805,7 @@ Examples:
             dataset, scaler = builder.build_multi_asset(mode=mode)
             builder.save(dataset, scaler, mode=mode)
         
-        print("done: dataset created.")
+        print("\nDone: dataset created.")
         
     except Exception as e:
         print(f"error: {e}")
