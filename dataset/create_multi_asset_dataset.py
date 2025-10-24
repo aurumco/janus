@@ -473,15 +473,15 @@ class MultiAssetDatasetBuilder:
         return df_final
 
     def _calculate_pretrain_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate minimal features for pre-training (SSL).
+        """Calculate features for pre-training matching fine-tune structure.
 
         Args:
             df: Combined OHLCV DataFrame with asset_id.
 
         Returns:
-            DataFrame with basic features (no labels).
+            DataFrame with features (no labels).
         """
-        self._log(f"[4/5] Calculating pre-training features...")
+        self._log(f"\n[4/5] Calculating pre-training features...")
         
         all_features = []
         
@@ -490,35 +490,20 @@ class MultiAssetDatasetBuilder:
             df_asset = df[asset_mask].copy()
             
             symbol = df_asset['symbol'].iloc[0]
-            self._log(f"  Processing {symbol}...")
+            self._log(f"  Processing features for {symbol}...")
             
-            # Basic price features
-            df_asset['returns'] = df_asset['close'].pct_change()
-            df_asset['log_returns'] = np.log(df_asset['close'] / df_asset['close'].shift(1))
-            df_asset['high_low_ratio'] = df_asset['high'] / df_asset['low']
-            df_asset['close_open_ratio'] = df_asset['close'] / df_asset['open']
-            
-            # Volume features
-            df_asset['volume_change'] = df_asset['volume'].pct_change()
-            df_asset['volume_ma_ratio'] = df_asset['volume'] / df_asset['volume'].rolling(20).mean()
-            
-            # Time features
-            df_asset['hour_sin'] = np.sin(2 * np.pi * df_asset.index.hour / 24)
-            df_asset['hour_cos'] = np.cos(2 * np.pi * df_asset.index.hour / 24)
-            df_asset['day_of_week_sin'] = np.sin(2 * np.pi * df_asset.index.dayofweek / 7)
-            df_asset['day_of_week_cos'] = np.cos(2 * np.pi * df_asset.index.dayofweek / 7)
+            df_asset = self._calculate_technical_indicators(df_asset)
             
             all_features.append(df_asset)
         
         df_final = pd.concat(all_features, axis=0).sort_index()
         
-        # Drop OHLCV and symbol, keep only features and asset_id
-        feature_cols = ['returns', 'log_returns', 'high_low_ratio', 'close_open_ratio',
-                       'volume_change', 'volume_ma_ratio',
-                       'hour_sin', 'hour_cos', 'day_of_week_sin', 'day_of_week_cos',
-                       'asset_id']
+        feature_cols = [col for col in df_final.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'symbol', 'asset_id']]
+        valid_mask = df_final[feature_cols].notna().all(axis=1)
+        df_final = df_final[valid_mask]
         
-        df_final = df_final[feature_cols].dropna()
+        keep_cols = feature_cols + ['asset_id']
+        df_final = df_final[keep_cols]
         
         return df_final
 
