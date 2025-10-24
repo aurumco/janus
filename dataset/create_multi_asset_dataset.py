@@ -10,7 +10,40 @@ import select
 import joblib
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
+try:
+    from sklearn.preprocessing import MinMaxScaler as _SKMinMaxScaler
+    MinMaxScaler = _SKMinMaxScaler
+except Exception:
+    class MinMaxScaler:
+        def __init__(self, feature_range: Tuple[float, float] = (0.0, 1.0)) -> None:
+            self.feature_range = feature_range
+            self.data_min_: np.ndarray | None = None
+            self.data_max_: np.ndarray | None = None
+            self.data_range_: np.ndarray | None = None
+        def fit(self, X: pd.DataFrame | np.ndarray) -> "MinMaxScaler":
+            if isinstance(X, pd.DataFrame):
+                arr = X.values.astype(float)
+            else:
+                arr = np.asarray(X, dtype=float)
+            self.data_min_ = np.nanmin(arr, axis=0)
+            self.data_max_ = np.nanmax(arr, axis=0)
+            self.data_range_ = self.data_max_ - self.data_min_
+            return self
+        def transform(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+            if isinstance(X, pd.DataFrame):
+                arr = X.values.astype(float)
+            else:
+                arr = np.asarray(X, dtype=float)
+            if self.data_min_ is None or self.data_range_ is None:
+                raise ValueError("Scaler not fitted")
+            fr_min, fr_max = self.feature_range
+            scale = np.where(self.data_range_ == 0, 0.0, (fr_max - fr_min) / self.data_range_)
+            min_adj = np.where(self.data_range_ == 0, 0.0, self.data_min_)
+            X_std = (arr - min_adj) * scale + fr_min
+            X_std[:, self.data_range_ == 0] = fr_min
+            return X_std
+        def fit_transform(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+            return self.fit(X).transform(X)
 
 try:
     from .config import DatasetConfig
