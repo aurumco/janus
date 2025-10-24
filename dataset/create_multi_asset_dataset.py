@@ -37,10 +37,12 @@ except Exception:
             if self.data_min_ is None or self.data_range_ is None:
                 raise ValueError("Scaler not fitted")
             fr_min, fr_max = self.feature_range
-            scale = np.where(self.data_range_ == 0, 0.0, (fr_max - fr_min) / self.data_range_)
-            min_adj = np.where(self.data_range_ == 0, 0.0, self.data_min_)
+            zero_range = np.isnan(self.data_range_) | (self.data_range_ == 0)
+            scale = np.divide((fr_max - fr_min), self.data_range_, out=np.zeros_like(self.data_range_, dtype=float), where=~zero_range)
+            min_adj = np.where(zero_range | np.isnan(self.data_min_), 0.0, self.data_min_)
             X_std = (arr - min_adj) * scale + fr_min
-            X_std[:, self.data_range_ == 0] = fr_min
+            if X_std.ndim == 2:
+                X_std[:, zero_range] = fr_min
             return X_std
         def fit_transform(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
             return self.fit(X).transform(X)
@@ -326,16 +328,14 @@ class MultiAssetDatasetBuilder:
         """
         start_time = time.time()
 
-        self._log("="*70)
-        self._log("JANUS MULTI-ASSET DATASET BUILDER")
-        self._log("="*70)
+        self._log("  • JANUS MULTI-ASSET DATASET BUILDER")
         self._log(f"Mode: {mode.upper()}")
         
         # Discover assets
         assets = self.discover_assets()
         
         if not assets:
-            self._log("\n❌ Error: No valid asset data found!")
+            self._log("\nError: No valid asset data found!")
             self._log("\nTroubleshooting:")
             self._log("1. Ensure CSV files exist in the dataset directory")
             self._log("2. Files should be named like: BTCUSDT.csv, ETHUSDT.csv")
@@ -583,37 +583,24 @@ class MultiAssetDatasetBuilder:
         features: list,
         elapsed_time: float
     ) -> None:
-        """Print dataset creation summary.
-
-        Args:
-            dataset: Final dataset.
-            features: List of feature names.
-            elapsed_time: Time taken to build dataset.
-        """
-        self._log("\n" + "="*70)
-        self._log("DATASET SUMMARY")
-        self._log("="*70)
-        self._log(f"Total samples: {len(dataset):,}")
-        self._log(f"Features: {len(features)}")
-        self._log(f"Assets: {dataset['asset_id'].nunique()}")
-        self._log(f"Time elapsed: {elapsed_time:.2f}s")
+        self._log("summary")
+        self._log(f"- samples: {len(dataset):,}")
+        self._log(f"- features: {len(features)}")
+        self._log(f"- assets: {dataset['asset_id'].nunique()}")
+        self._log(f"- elapsed: {elapsed_time:.2f}s")
 
         if 'target' in dataset.columns:
             target_values = dataset['target']
-            self._log("\nTarget Distribution (Price Change %):")
-            self._log(f"  Mean: {target_values.mean():.4f} ({target_values.mean()*100:.2f}%)")
-            self._log(f"  Std:  {target_values.std():.4f} ({target_values.std()*100:.2f}%)")
-            self._log(f"  Min:  {target_values.min():.4f} ({target_values.min()*100:.2f}%)")
-            self._log(f"  Max:  {target_values.max():.4f} ({target_values.max()*100:.2f}%)")
-            
+            self._log("- target:")
+            self._log(f"  - mean: {target_values.mean():.4f} ({target_values.mean()*100:.2f}%)")
+            self._log(f"  - std: {target_values.std():.4f} ({target_values.std()*100:.2f}%)")
+            self._log(f"  - min: {target_values.min():.4f} ({target_values.min()*100:.2f}%)")
+            self._log(f"  - max: {target_values.max():.4f} ({target_values.max()*100:.2f}%)")
             positive_samples = (target_values > 0).sum()
             negative_samples = (target_values < 0).sum()
             total = len(target_values)
-            
-            self._log(f"\n  Positive: {positive_samples:6,} ({100*positive_samples/total:5.2f}%)")
-            self._log(f"  Negative: {negative_samples:6,} ({100*negative_samples/total:5.2f}%)")
-
-        self._log("="*70 + "\n")
+            self._log(f"  - positive: {positive_samples:6,} ({100*positive_samples/total:5.2f}%)")
+            self._log(f"  - negative: {negative_samples:6,} ({100*negative_samples/total:5.2f}%)")
 
     def save(self, dataset: pd.DataFrame, scaler: MinMaxScaler, mode: str) -> None:
         """Save dataset and scaler to disk.
@@ -799,7 +786,7 @@ Examples:
         print("done: dataset created.")
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
