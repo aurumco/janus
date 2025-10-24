@@ -732,13 +732,10 @@ Examples:
     
     args = parser.parse_args()
     
-    print("\n" + "="*70)
-    print(" "*20 + "JANUS MULTI-ASSET DATASET BUILDER")
-    print("="*70)
-    
+    print("Janus Dataset Builder")
     if args.mode:
         mode = args.mode
-        print(f"\nMode: {mode} (from CLI)")
+        print(f"- mode: {mode} (cli)")
     else:
         mode_options = ["pre-train", "fine-tune", "both"]
         mode = get_user_choice(
@@ -750,7 +747,7 @@ Examples:
     
     if args.format:
         format_choice = args.format
-        print(f"Format: {format_choice} (from CLI)")
+        print(f"- format: {format_choice} (cli)")
     else:
         format_options = ["parquet", "csv", "both"]
         format_choice = get_user_choice(
@@ -771,27 +768,35 @@ Examples:
     config.save_csv = save_csv
     
     builder = MultiAssetDatasetBuilder(config, verbose=True)
+    has_gpu, gpu_info = builder._detect_gpu()
+    cuda_ver = None
+    try:
+        import torch
+        cuda_ver = torch.version.cuda if torch and torch.cuda.is_available() else None
+    except Exception:
+        cuda_ver = None
+    if has_gpu:
+        if cuda_ver:
+            print(f"- gpu: {gpu_info}, cuda {cuda_ver}")
+        else:
+            print(f"- gpu: {gpu_info}")
+    else:
+        print("- gpu: cpu")
     
     try:
         if mode == "both":
-            # Build pre-train dataset
-            print("\n" + "="*70)
-            print("BUILDING PRE-TRAIN DATASET")
-            print("="*70)
+            print("build: pre-train")
             dataset_pretrain, scaler_pretrain = builder.build_multi_asset(mode="pre-train")
             builder.save(dataset_pretrain, scaler_pretrain, mode="pre-train")
             
-            # Build fine-tune dataset
-            print("\n" + "="*70)
-            print("BUILDING FINE-TUNE DATASET")
-            print("="*70)
+            print("build: fine-tune")
             dataset_finetune, scaler_finetune = builder.build_multi_asset(mode="fine-tune")
             builder.save(dataset_finetune, scaler_finetune, mode="fine-tune")
         else:
             dataset, scaler = builder.build_multi_asset(mode=mode)
             builder.save(dataset, scaler, mode=mode)
         
-        print("\n✅ Dataset creation completed successfully.")
+        print("done: dataset created.")
         
     except Exception as e:
         print(f"\n❌ Error: {e}")
