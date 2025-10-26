@@ -254,28 +254,32 @@ class DataLoaderFactory:
                 test_dataset = FineTuneDataset(X_test, y_test)
 
             print("- Creating DataLoader objects...")
+            use_streaming = features_path is not None and self.mode == "pretrain"
+            workers = 0 if use_streaming else self.num_workers
+            pin_mem = False if use_streaming else True
+            
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=self.batch_size,
                 shuffle=self.shuffle_train,
-                num_workers=self.num_workers,
-                pin_memory=True,
+                num_workers=workers,
+                pin_memory=pin_mem,
             )
 
             val_loader = DataLoader(
                 val_dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
-                num_workers=self.num_workers,
-                pin_memory=True,
+                num_workers=workers,
+                pin_memory=pin_mem,
             )
 
             test_loader = DataLoader(
                 test_dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
-                num_workers=self.num_workers,
-                pin_memory=True,
+                num_workers=workers,
+                pin_memory=pin_mem,
             )
 
             elapsed = time.time() - start_time

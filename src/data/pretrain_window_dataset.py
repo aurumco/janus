@@ -36,6 +36,15 @@ class PretrainWindowDataset(Dataset):
             if asset_ids_memmap_path
             else np.zeros(n_timesteps, dtype=np.int64)
         )
+        
+        try:
+            import mmap
+            if hasattr(mmap, 'MADV_SEQUENTIAL'):
+                import ctypes
+                libc = ctypes.CDLL('libc.so.6')
+                libc.madvise(self.features_mm.ctypes.data, self.features_mm.nbytes, mmap.MADV_SEQUENTIAL)
+        except Exception:
+            pass
         self.n_timesteps = n_timesteps
         self.n_features = n_features
         self.sequence_length = sequence_length
@@ -57,8 +66,10 @@ class PretrainWindowDataset(Dataset):
         end = i + self.sequence_length
 
         window_np = self.features_mm[i:end, :]
-        original_sequence = torch.from_numpy(window_np.astype(np.float32, copy=False))
-        asset_id = torch.tensor(self.asset_ids_mm[end - 1], dtype=torch.long)
+        if window_np.dtype != np.float32:
+            window_np = window_np.astype(np.float32)
+        original_sequence = torch.from_numpy(np.array(window_np, copy=True))
+        asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)
 
         mask_binary = self._generate_smart_mask(original_sequence)
         original_masked_values = original_sequence[mask_binary].clone()
@@ -67,9 +78,10 @@ class PretrainWindowDataset(Dataset):
 
         future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
         if future_end_idx > end:
-            prices = self.features_mm[end:future_end_idx, self.price_column_idx].astype(np.float32, copy=False)
+            prices = self.features_mm[end:future_end_idx, self.price_column_idx]
             if len(prices) > 1:
-                log_returns = np.log((prices[1:] + 1e-8) / (prices[:-1] + 1e-8))
+                prices_arr = np.array(prices, dtype=np.float32)
+                log_returns = np.log((prices_arr[1:] + 1e-8) / (prices_arr[:-1] + 1e-8))
                 volatility = torch.tensor(float(np.std(log_returns)), dtype=torch.float32)
             else:
                 volatility = torch.tensor(0.0, dtype=torch.float32)

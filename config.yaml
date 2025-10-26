@@ -24,7 +24,7 @@ pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_1min_dataset.parquet"
     sequence_length: 128
-    batch_size: 128
+    batch_size: 64
     num_features: 16
     masking_ratio: 0.15
     volatility_lookahead: 60
