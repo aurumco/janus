@@ -150,9 +150,6 @@ class MemoryEfficientPretrainDataset(ParquetStreamingDataset):
         masked_sequence = original_sequence.clone()
         masked_sequence[mask_binary] = 0.0
 
-        # Extract original masked values for reconstruction loss
-        original_masked_values = original_sequence[mask_binary].clone()
-
         # Compute volatility target
         future_end = min(end_row + self.volatility_lookahead, self.total_rows)
         if future_end > end_row:
@@ -175,7 +172,6 @@ class MemoryEfficientPretrainDataset(ParquetStreamingDataset):
         return {
             "input_sequence": masked_sequence,
             "mask_binary": mask_binary,
-            "original_masked_values": original_masked_values,
             "original_sequence": original_sequence,
             "volatility_target": torch.tensor([volatility], dtype=torch.float32),
             "asset_id": torch.tensor(asset_id, dtype=torch.long),

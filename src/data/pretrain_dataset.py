@@ -66,8 +66,6 @@ class PretrainDataset(Dataset):
         num_to_mask = max(1, int(self.seq_len * self.masking_ratio))
         mask_binary = self._generate_smart_mask(original_sequence)
         
-        original_masked_values = original_sequence[mask_binary].clone()
-        
         masked_sequence = original_sequence.clone()
         masked_sequence[mask_binary] = 0.0
         
@@ -92,7 +90,6 @@ class PretrainDataset(Dataset):
         return {
             "input_sequence": masked_sequence,
             "mask_binary": mask_binary,
-            "original_masked_values": original_masked_values,
             "original_sequence": original_sequence,
             "volatility_target": volatility.unsqueeze(0),
             "asset_id": asset_id,
