@@ -9,6 +9,11 @@ import pandas as pd
 from torch.utils.data import DataLoader
 
 try:
+    from src.utils.logger import logger
+except Exception:
+    logger = None
+
+try:
     from tqdm import tqdm
 except Exception:  # pragma: no cover
     def tqdm(iterable=None, **kwargs):  # type: ignore
@@ -108,7 +113,10 @@ class DataLoaderFactory:
 
         try:
             if self.verbose:
-                print("- Reading parquet file...")
+                if logger:
+                    logger.info("- Reading parquet file...")
+                else:
+                    print("- Reading parquet file...")
                 mem_info("  Before read")
             data = None
             gdata = None
@@ -117,30 +125,49 @@ class DataLoaderFactory:
                     import cudf  # type: ignore
                     gdata = str(self.data_path)
                     if self.verbose:
-                        print(f"  Using cuDF GPU processing (chunked read)")
+                        if logger:
+                            logger.info("  Using cuDF GPU processing (chunked read)")
+                        else:
+                            print("  Using cuDF GPU processing (chunked read)")
                 except Exception as ge:
                     if self.verbose:
-                        print(f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU")
+                        msg = f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU"
+                        if logger:
+                            logger.warning(msg)
+                        else:
+                            print(msg)
                     gdata = None
             if gdata is None:
                 data = pd.read_parquet(self.data_path, engine="pyarrow")
                 if self.verbose:
-                    print(f"  Loaded DataFrame: shape={data.shape}")
+                    if logger:
+                        logger.info(f"  Loaded DataFrame: shape={data.shape}")
+                    else:
+                        print(f"  Loaded DataFrame: shape={data.shape}")
                     mem_info("  After read")
 
             if self.verbose:
-                print("- Processing sequences (vectorized sliding windows)...")
+                if logger:
+                    logger.info("- Processing sequences (vectorized sliding windows)...")
+                else:
+                    print("- Processing sequences (vectorized sliding windows)...")
             if gdata is not None and self.use_gpu_preprocess:
                 features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
                 if self.verbose:
-                    print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
+                    if logger:
+                        logger.info(f"  Base features: {n_timesteps} timesteps x {n_features} features")
+                    else:
+                        print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
                     mem_info("  After GPU process")
                 X = None
                 y = None
             else:
                 X, y = self.processing_strategy.process(data)
                 if self.verbose:
-                    print(f"  Sequences: X={X.shape}, y={y.shape}")
+                    if logger:
+                        logger.info(f"  Sequences: X={X.shape}, y={y.shape}")
+                    else:
+                        print(f"  Sequences: X={X.shape}, y={y.shape}")
                     mem_info("  After process")
                 features_path = None
                 asset_ids_path = None
@@ -148,7 +175,10 @@ class DataLoaderFactory:
                 n_features = None
 
             if self.verbose:
-                print("- Splitting train/val/test...")
+                if logger:
+                    logger.info("- Splitting train/val/test...")
+                else:
+                    print("- Splitting train/val/test...")
             if X is not None:
                 n_samples = len(X)
             else:
@@ -185,11 +215,17 @@ class DataLoaderFactory:
                 asset_ids_train = asset_ids_val = asset_ids_test = None
 
             if self.verbose:
-                print("- Building PyTorch datasets...")
+                if logger:
+                    logger.info("- Building PyTorch datasets...")
+                else:
+                    print("- Building PyTorch datasets...")
             if self.mode == "pretrain":
                 if self.use_streaming_fallback:
                     if self.verbose:
-                        print("  Using streaming fallback mode (direct parquet read)")
+                        if logger:
+                            logger.info("  Using streaming fallback mode (direct parquet read)")
+                        else:
+                            print("  Using streaming fallback mode (direct parquet read)")
                     full_dataset = MemoryEfficientPretrainDataset(
                         parquet_path=str(self.data_path),
                         sequence_length=self.sequence_length,
@@ -307,16 +343,23 @@ class DataLoaderFactory:
                     test_dataset = FineTuneDataset(X_test, y_test)
 
             if self.verbose:
-                print("- Creating DataLoader objects...")
+                if logger:
+                    logger.info("- Creating DataLoader objects...")
+                else:
+                    print("- Creating DataLoader objects...")
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
             streaming_active = self.use_streaming_fallback or use_streaming_memmap
             if self.verbose:
                 if self.use_streaming_fallback:
-                    print("  Backend: Streaming Parquet (MemoryEfficient*) - SLOW")
+                    msg = "  Backend: Streaming Parquet (MemoryEfficient*) - SLOW"
                 elif use_streaming_memmap:
-                    print("  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT")
+                    msg = "  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT"
                 else:
-                    print("  Backend: In-Memory Dataset (FAST but HIGH RAM)")
+                    msg = "  Backend: In-Memory Dataset (FAST but HIGH RAM)"
+                if logger:
+                    logger.info(msg)
+                else:
+                    print(msg)
 
             workers = 0 if streaming_active else self.num_workers
             pin_mem = True if not streaming_active else False

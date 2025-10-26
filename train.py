@@ -204,6 +204,7 @@ def main() -> None:
             cross_asset_masking_prob=config.get('data.cross_asset_masking_prob', 0.3),
             use_gpu_preprocess=use_gpu_pre,
             use_streaming_fallback=use_streaming_fallback,
+            verbose=True,
         )
     else:
         # Fine-tuning mode
