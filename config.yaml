@@ -22,7 +22,7 @@ assets:
 # Pre-training configuration for SSL on 5min multi-asset data
 pretrain:
   data:
-    path: "/kaggle/input/janusds/janus_pretrain_5min_dataset.parquet"
+    path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
     sequence_length: 128
     batch_size: 32
     num_features: 16
@@ -72,7 +72,7 @@ pretrain:
 # Fine-tuning configuration for regression on 30min data
 finetune:
   data:
-    path: "/kaggle/input/janusds/janus_finetune_30min_dataset.parquet"
+    path: "/kaggle/input/janusds/janusdataset/janus_finetune_30min_dataset.parquet"
     sequence_length: 96
     batch_size: 128
     num_features: 16

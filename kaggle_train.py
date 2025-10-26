@@ -13,7 +13,7 @@ from pathlib import Path
 REPO_URL = os.environ.get("REPO_URL", "https://github.com/aurumco/janus.git")
 REPO_BRANCH = os.environ.get("REPO_BRANCH", "main")
 
-DATA_PARQUET = "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
+DATA_PARQUET = "/kaggle/input/janusds/janusdataset/janus_finetune_30min_dataset.parquet"
 OUTPUT_DIR = "/kaggle/working"
 
 
