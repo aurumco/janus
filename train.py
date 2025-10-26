@@ -3,8 +3,6 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-# Critical: Reduce CUDA memory fragmentation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
 
 import argparse
 from datetime import datetime
@@ -101,9 +99,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Main training function."""
-    import gc
-    gc.collect()
-    
     args = parse_args()
 
     # Load full config
@@ -175,18 +170,9 @@ def main() -> None:
     use_gpu_pre = config.get('data.use_gpu_preprocess')
     if use_gpu_pre is None:
         use_gpu_pre = full_config.get('device.use_gpu_preprocess', True)
-    
-    # Auto-detect ultra-optimized mode for Kaggle or low-memory environments
-    use_ultra_opt = config.get('data.use_ultra_optimized')
-    if use_ultra_opt is None:
-        # Enable by default if in Kaggle or low RAM
-        import os
-        is_kaggle = os.path.exists('/kaggle/working')
-        use_ultra_opt = is_kaggle
-        if use_ultra_opt:
-            print("! Auto-enabled ULTRA-OPTIMIZED mode (Kaggle detected)")
     if mode == 'pretrain':
         # Pre-training mode: no target column needed
+        use_streaming_fallback = bool(config.get('data.use_streaming_fallback', False))
         data_factory = DataLoaderFactory(
             data_path=data_path,
             processing_strategy=SequenceProcessingStrategy(
@@ -208,10 +194,11 @@ def main() -> None:
             smart_masking_prob=config.get('data.smart_masking_prob', 0.4),
             cross_asset_masking_prob=config.get('data.cross_asset_masking_prob', 0.3),
             use_gpu_preprocess=use_gpu_pre,
-            use_ultra_optimized=use_ultra_opt,
+            use_streaming_fallback=use_streaming_fallback,
         )
     else:
         # Fine-tuning mode
+        use_streaming_fallback = bool(config.get('data.use_streaming_fallback', False))
         data_factory = DataLoaderFactory(
             data_path=data_path,
             processing_strategy=SequenceProcessingStrategy(
@@ -229,7 +216,7 @@ def main() -> None:
             random_seed=full_config.get('seed', 42),
             sequence_length=config.get('data.sequence_length'),
             use_gpu_preprocess=use_gpu_pre,
-            use_ultra_optimized=use_ultra_opt,
+            use_streaming_fallback=use_streaming_fallback,
         )
 
     print("Creating data loaders...")

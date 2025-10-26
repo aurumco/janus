@@ -23,7 +23,7 @@ assets:
 pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
-    sequence_length: 128
+    sequence_length: 32
     batch_size: 32
     num_features: 16
     masking_ratio: 0.15
@@ -35,6 +35,7 @@ pretrain:
     test_ratio: 0.0
     num_workers: 0
     shuffle_train: false
+    use_streaming_fallback: true
   
   model:
     name: "MambaFoundation"

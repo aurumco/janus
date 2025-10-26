@@ -37,7 +37,6 @@ class Trainer:
         use_amp: bool = False,
         warmup_epochs: int = 0,
         accumulation_steps: int = 1,
-        aggressive_cleanup: bool = True,
     ) -> None:
         """Initialize trainer.
 
@@ -90,24 +89,11 @@ class Trainer:
 
         self.best_val_loss = float('inf')
         self.patience_counter = 0
-        self.aggressive_cleanup = aggressive_cleanup
         self.history = {
             'train_loss': [],
             'val_loss': [],
             'learning_rate': [],
         }
-
-    def _cleanup_memory(self) -> None:
-        """Aggressively clean up memory."""
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            # Force garbage collection of cached tensors
-            try:
-                torch.cuda.reset_peak_memory_stats()
-            except Exception:
-                pass
 
     def freeze_backbone(self, freeze: bool = True) -> None:
         """Freeze or unfreeze backbone layers for fine-tuning.
@@ -220,10 +206,8 @@ class Trainer:
 
             total_loss += loss.item()
             
-            # Periodic memory cleanup every 50 batches (more aggressive)
-            if self.aggressive_cleanup and batch_idx > 0 and batch_idx % 50 == 0:
-                self._cleanup_memory()
-            elif batch_idx > 0 and batch_idx % 100 == 0:
+            # Periodic memory cleanup every 100 batches
+            if batch_idx > 0 and batch_idx % 100 == 0:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -231,12 +215,9 @@ class Trainer:
         avg_loss = total_loss / len(train_loader)
         
         # Cleanup after epoch
-        if self.aggressive_cleanup:
-            self._cleanup_memory()
-        else:
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         # Add averaged loss components
@@ -294,12 +275,9 @@ class Trainer:
         avg_loss = total_loss / len(val_loader)
         
         # Cleanup after validation
-        if self.aggressive_cleanup:
-            self._cleanup_memory()
-        else:
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         # Add averaged loss components
