@@ -29,6 +29,8 @@ class DataLoaderFactory:
         masking_ratio: float = 0.15,
         volatility_lookahead: int = 60,
         sequence_length: int = 96,
+        smart_masking_prob: float = 0.4,
+        cross_asset_masking_prob: float = 0.3,
     ) -> None:
         """Initialize data loader factory.
 
@@ -60,6 +62,8 @@ class DataLoaderFactory:
         self.masking_ratio = masking_ratio
         self.volatility_lookahead = volatility_lookahead
         self.sequence_length = sequence_length
+        self.smart_masking_prob = smart_masking_prob
+        self.cross_asset_masking_prob = cross_asset_masking_prob
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -76,6 +80,11 @@ class DataLoaderFactory:
         data = pd.read_parquet(self.data_path)
 
         X, y = self.processing_strategy.process(data)
+        
+        asset_ids = None
+        if self.mode == "pretrain" and "asset_id" in data.columns:
+            import numpy as np
+            asset_ids = data["asset_id"].values.astype(np.int64)
 
         n_samples = len(X)
         train_end = int(n_samples * self.train_ratio)
@@ -89,25 +98,44 @@ class DataLoaderFactory:
         
         X_test = X[val_end:]
         y_test = y[val_end:]
+        
+        if asset_ids is not None:
+            asset_ids_train = asset_ids[:train_end]
+            asset_ids_val = asset_ids[train_end:val_end]
+            asset_ids_test = asset_ids[val_end:]
+        else:
+            import numpy as np
+            asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
+            asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
+            asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
 
         if self.mode == "pretrain":
             train_dataset = PretrainDataset(
                 X_train,
+                asset_ids=asset_ids_train,
                 sequence_length=self.sequence_length,
                 masking_ratio=self.masking_ratio,
                 volatility_lookahead=self.volatility_lookahead,
+                smart_masking_prob=self.smart_masking_prob,
+                cross_asset_masking_prob=self.cross_asset_masking_prob,
             )
             val_dataset = PretrainDataset(
                 X_val,
+                asset_ids=asset_ids_val,
                 sequence_length=self.sequence_length,
                 masking_ratio=self.masking_ratio,
                 volatility_lookahead=self.volatility_lookahead,
+                smart_masking_prob=self.smart_masking_prob,
+                cross_asset_masking_prob=self.cross_asset_masking_prob,
             )
             test_dataset = PretrainDataset(
                 X_test,
+                asset_ids=asset_ids_test,
                 sequence_length=self.sequence_length,
                 masking_ratio=self.masking_ratio,
                 volatility_lookahead=self.volatility_lookahead,
+                smart_masking_prob=self.smart_masking_prob,
+                cross_asset_masking_prob=self.cross_asset_masking_prob,
             )
         else:
             train_dataset = FineTuneDataset(X_train, y_train)

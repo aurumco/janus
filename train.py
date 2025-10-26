@@ -182,6 +182,8 @@ def main() -> None:
             masking_ratio=config.get('data.masking_ratio', 0.15),
             volatility_lookahead=config.get('data.volatility_lookahead', 60),
             sequence_length=config.get('data.sequence_length'),
+            smart_masking_prob=config.get('data.smart_masking_prob', 0.4),
+            cross_asset_masking_prob=config.get('data.cross_asset_masking_prob', 0.3),
         )
     else:
         # Fine-tuning mode
@@ -262,8 +264,16 @@ def main() -> None:
         criterion = PretrainLoss(
             masked_price_weight=config.get('loss.masked_price_weight', 1.0),
             volatility_weight=config.get('loss.volatility_weight', 0.5),
+            contrastive_weight=config.get('loss.contrastive_weight', 0.2),
+            temporal_consistency_weight=config.get('loss.temporal_consistency_weight', 0.1),
+            temperature=config.get('loss.temperature', 0.07),
         )
-        print(f"Using Pre-training Loss (masked_price_w={config.get('loss.masked_price_weight', 1.0)}, vol_w={config.get('loss.volatility_weight', 0.5)})")
+        print(f"Using Enhanced Pre-training Loss:")
+        print(f"  - Masked Price Weight      : {config.get('loss.masked_price_weight', 1.0)}")
+        print(f"  - Volatility Weight        : {config.get('loss.volatility_weight', 0.5)}")
+        print(f"  - Contrastive Weight       : {config.get('loss.contrastive_weight', 0.2)}")
+        print(f"  - Temporal Consistency     : {config.get('loss.temporal_consistency_weight', 0.1)}")
+        print(f"  - Temperature              : {config.get('loss.temperature', 0.07)}")
     else:
         loss_type = config.get('loss.type', 'huber').lower()
         if loss_type == 'mse':
@@ -309,11 +319,31 @@ def main() -> None:
             criterion = nn.HuberLoss(delta=huber_delta)
             print(f"Using Huber Loss (delta={huber_delta}) for regression")
 
-    optimizer = AdamW(
-        model.parameters(),
-        lr=config.get('training.learning_rate'),
-        weight_decay=config.get('training.weight_decay'),
-    )
+    if mode == 'finetune':
+        pretrained_params = []
+        new_params = []
+        
+        for name, param in model.named_parameters():
+            if 'regression_head' in name or 'adapter' in name or 'output' in name:
+                new_params.append(param)
+            else:
+                pretrained_params.append(param)
+        
+        base_lr = config.get('training.learning_rate')
+        head_lr_multiplier = config.get('training.head_lr_multiplier', 10.0)
+        
+        optimizer = AdamW([
+            {'params': pretrained_params, 'lr': base_lr, 'name': 'pretrained'},
+            {'params': new_params, 'lr': base_lr * head_lr_multiplier, 'name': 'head'}
+        ], weight_decay=config.get('training.weight_decay'))
+        
+        print(f"Using layered LR: backbone={base_lr:.2e}, head={base_lr*head_lr_multiplier:.2e}")
+    else:
+        optimizer = AdamW(
+            model.parameters(),
+            lr=config.get('training.learning_rate'),
+            weight_decay=config.get('training.weight_decay'),
+        )
 
     scheduler_type = config.get('training.scheduler', 'reduce_on_plateau')
     if scheduler_type == 'cosine':

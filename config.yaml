@@ -28,6 +28,8 @@ pretrain:
     num_features: 16
     masking_ratio: 0.15
     volatility_lookahead: 60
+    smart_masking_prob: 0.4
+    cross_asset_masking_prob: 0.3
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
@@ -63,6 +65,9 @@ pretrain:
   loss:
     masked_price_weight: 1.0
     volatility_weight: 0.5
+    contrastive_weight: 0.2
+    temporal_consistency_weight: 0.1
+    temperature: 0.07
 
 # Fine-tuning configuration for regression on 30min data
 finetune:
@@ -117,6 +122,7 @@ finetune:
     gradient_clip: 1.5
     accumulation_steps: 2
     freeze_backbone_epochs: 3
+    head_lr_multiplier: 10.0
     early_stopping_patience: 15
     early_stopping_min_delta: 0.000001
     save_best_only: true
