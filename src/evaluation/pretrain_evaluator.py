@@ -197,3 +197,5 @@ class EnhancedPretrainEvaluator:
         print(f"  Temporal Consistency         : {metrics.get('temporal_consistency', 0):.6f}")
 
         print("=" * 70 + "\n")
+
+PretrainEvaluator = EnhancedPretrainEvaluator
