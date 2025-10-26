@@ -1,5 +1,6 @@
 """Training module for Mamba regressor."""
 
+import gc
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -204,8 +205,19 @@ class Trainer:
                     self.optimizer.zero_grad()
 
             total_loss += loss.item()
+            
+            # Periodic memory cleanup every 100 batches
+            if batch_idx > 0 and batch_idx % 100 == 0:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         avg_loss = total_loss / len(train_loader)
+        
+        # Cleanup after epoch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         # Add averaged loss components
@@ -261,6 +273,11 @@ class Trainer:
                 total_loss += loss.item()
 
         avg_loss = total_loss / len(val_loader)
+        
+        # Cleanup after validation
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         # Add averaged loss components

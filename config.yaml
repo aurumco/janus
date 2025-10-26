@@ -24,7 +24,7 @@ pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_1min_dataset.parquet"
     sequence_length: 128
-    batch_size: 64
+    batch_size: 32
     num_features: 16
     masking_ratio: 0.15
     volatility_lookahead: 60
@@ -33,8 +33,8 @@ pretrain:
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
-    num_workers: 2
-    shuffle_train: true
+    num_workers: 0
+    shuffle_train: false
   
   model:
     name: "MambaFoundation"
@@ -97,8 +97,8 @@ finetune:
     train_ratio: 0.75
     val_ratio: 0.15
     test_ratio: 0.10
-    num_workers: 2
-    shuffle_train: true
+    num_workers: 0
+    shuffle_train: false
   
   model:
     name: "MambaFineTuned"

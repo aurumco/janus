@@ -5,6 +5,10 @@ from .finetune_dataset import FineTuneDataset
 from .pretrain_dataset import PretrainDataset
 from .pretrain_window_dataset import PretrainWindowDataset
 from .sequence_strategy import SequenceProcessingStrategy
+from .memory_efficient_dataset import (
+    MemoryEfficientPretrainDataset,
+    MemoryEfficientFinetuneDataset,
+)
 
 __all__ = [
     "DataLoaderFactory",
@@ -12,4 +16,6 @@ __all__ = [
     "PretrainDataset",
     "PretrainWindowDataset",
     "SequenceProcessingStrategy",
+    "MemoryEfficientPretrainDataset",
+    "MemoryEfficientFinetuneDataset",
 ]

@@ -22,6 +22,10 @@ except Exception:  # pragma: no cover
 from .base_strategy import DataProcessingStrategy
 from .finetune_dataset import FineTuneDataset
 from .pretrain_dataset import PretrainDataset
+from .memory_efficient_dataset import (
+    MemoryEfficientPretrainDataset,
+    MemoryEfficientFinetuneDataset,
+)
 
 
 class DataLoaderFactory:
@@ -44,7 +48,8 @@ class DataLoaderFactory:
         sequence_length: int = 96,
         smart_masking_prob: float = 0.4,
         cross_asset_masking_prob: float = 0.3,
-        use_gpu_preprocess: bool = False,
+        use_gpu_preprocess: bool = True,
+        use_streaming_fallback: bool = False,
     ) -> None:
         """Initialize data loader factory.
 
@@ -79,6 +84,7 @@ class DataLoaderFactory:
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
         self.use_gpu_preprocess = use_gpu_preprocess
+        self.use_streaming_fallback = use_streaming_fallback
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -170,7 +176,24 @@ class DataLoaderFactory:
 
             print("- Building PyTorch datasets...")
             if self.mode == "pretrain":
-                if features_path is not None:
+                if self.use_streaming_fallback:
+                    print("  Using streaming fallback mode (direct parquet read)")
+                    full_dataset = MemoryEfficientPretrainDataset(
+                        parquet_path=str(self.data_path),
+                        sequence_length=self.sequence_length,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        stride=1,
+                    )
+                    n_samples = len(full_dataset)
+                    train_end = int(n_samples * self.train_ratio)
+                    val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+                    
+                    from torch.utils.data import Subset
+                    train_dataset = Subset(full_dataset, range(0, train_end))
+                    val_dataset = Subset(full_dataset, range(train_end, val_end))
+                    test_dataset = Subset(full_dataset, range(val_end, n_samples))
+                elif features_path is not None:
                     # Local import to avoid environment-specific import errors
                     try:
                         from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
@@ -249,9 +272,27 @@ class DataLoaderFactory:
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
                     )
             else:
-                train_dataset = FineTuneDataset(X_train, y_train)
-                val_dataset = FineTuneDataset(X_val, y_val)
-                test_dataset = FineTuneDataset(X_test, y_test)
+                if self.use_streaming_fallback:
+                    print("  Using streaming fallback mode (direct parquet read)")
+                    full_dataset = MemoryEfficientFinetuneDataset(
+                        parquet_path=str(self.data_path),
+                        feature_columns=self.processing_strategy.feature_columns,
+                        target_column=self.processing_strategy.target_column,
+                        sequence_length=self.sequence_length,
+                        stride=1,
+                    )
+                    n_samples = len(full_dataset)
+                    train_end = int(n_samples * self.train_ratio)
+                    val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+                    
+                    from torch.utils.data import Subset
+                    train_dataset = Subset(full_dataset, range(0, train_end))
+                    val_dataset = Subset(full_dataset, range(train_end, val_end))
+                    test_dataset = Subset(full_dataset, range(val_end, n_samples))
+                else:
+                    train_dataset = FineTuneDataset(X_train, y_train)
+                    val_dataset = FineTuneDataset(X_val, y_val)
+                    test_dataset = FineTuneDataset(X_test, y_test)
 
             print("- Creating DataLoader objects...")
             use_streaming = features_path is not None and self.mode == "pretrain"
@@ -290,6 +331,16 @@ class DataLoaderFactory:
 
             elapsed = time.time() - start_time
             print(f"✓ Data loaders ready in {elapsed:.2f}s")
+            
+            # Aggressive memory cleanup
+            if X is not None:
+                del X, y, X_train, y_train, X_val, y_val, X_test, y_test
+            if 'data' in locals():
+                del data
+            if 'gdata' in locals():
+                del gdata
+            gc.collect()
+            
             mem_info("  Final")
 
             return {
