@@ -9,6 +9,11 @@ from .memory_efficient_dataset import (
     MemoryEfficientPretrainDataset,
     MemoryEfficientFinetuneDataset,
 )
+from .streaming_dataset import (
+    StreamingParquetDataset,
+    UltraLightweightPretrainDataset,
+)
+from .ultra_optimized_loader import create_ultra_optimized_loaders
 
 __all__ = [
     "DataLoaderFactory",
@@ -18,4 +23,7 @@ __all__ = [
     "SequenceProcessingStrategy",
     "MemoryEfficientPretrainDataset",
     "MemoryEfficientFinetuneDataset",
+    "StreamingParquetDataset",
+    "UltraLightweightPretrainDataset",
+    "create_ultra_optimized_loaders",
 ]

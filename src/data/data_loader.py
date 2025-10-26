@@ -50,6 +50,7 @@ class DataLoaderFactory:
         cross_asset_masking_prob: float = 0.3,
         use_gpu_preprocess: bool = True,
         use_streaming_fallback: bool = False,
+        use_ultra_optimized: bool = False,
     ) -> None:
         """Initialize data loader factory.
 
@@ -85,6 +86,7 @@ class DataLoaderFactory:
         self.cross_asset_masking_prob = cross_asset_masking_prob
         self.use_gpu_preprocess = use_gpu_preprocess
         self.use_streaming_fallback = use_streaming_fallback
+        self.use_ultra_optimized = use_ultra_optimized
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -175,6 +177,34 @@ class DataLoaderFactory:
                 asset_ids_train = asset_ids_val = asset_ids_test = None
 
             print("- Building PyTorch datasets...")
+            
+            # Ultra-optimized mode (highest priority for memory constraints)
+            if self.use_ultra_optimized:
+                print("  Using ULTRA-OPTIMIZED mode (minimal memory)")
+                from .ultra_optimized_loader import create_ultra_optimized_loaders
+                
+                loaders = create_ultra_optimized_loaders(
+                    data_path=str(self.data_path),
+                    mode=self.mode,
+                    sequence_length=self.sequence_length,
+                    batch_size=self.batch_size,
+                    max_samples=10000,
+                    feature_columns=self.processing_strategy.feature_columns if self.mode == 'finetune' else None,
+                    target_column=self.processing_strategy.target_column if self.mode == 'finetune' else None,
+                    masking_ratio=self.masking_ratio,
+                    use_streaming=False,
+                )
+                
+                gc.collect()
+                if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                elapsed = time.time() - start_time
+                print(f"✓ Ultra-optimized loaders ready in {elapsed:.2f}s")
+                mem_info("  Final")
+                
+                return loaders
+            
             if self.mode == "pretrain":
                 if self.use_streaming_fallback:
                     print("  Using streaming fallback mode (direct parquet read)")
