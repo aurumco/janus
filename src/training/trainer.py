@@ -154,7 +154,7 @@ class Trainer:
                 except TypeError:
                     ctx = amp_autocast()
                 with ctx:
-                    outputs = self.model(inputs)
+                    outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     
                     if isinstance(loss_output, dict):
@@ -180,7 +180,7 @@ class Trainer:
                     self.scaler.update()
                     self.optimizer.zero_grad()
             else:
-                outputs = self.model(inputs)
+                outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
                 if isinstance(loss_output, dict):
@@ -258,7 +258,7 @@ class Trainer:
                     inputs = inputs.to(self.device)
                     batch["targets"] = batch["targets"].to(self.device)
 
-                outputs = self.model(inputs)
+                outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
                 # Handle dictionary loss output
