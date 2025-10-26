@@ -6,6 +6,7 @@ import gc
 import time
 
 import pandas as pd
+import torch
 from torch.utils.data import DataLoader
 
 try:
@@ -225,9 +226,9 @@ class DataLoaderFactory:
                 if self.use_streaming_fallback:
                     if self.verbose:
                         if logger:
-                            logger.info("  Using streaming fallback mode (direct parquet read)")
+                            logger.info("  Dataset Backend: MemoryEfficientPretrainDataset (streaming parquet)")
                         else:
-                            print("  Using streaming fallback mode (direct parquet read)")
+                            print("  Dataset Backend: MemoryEfficientPretrainDataset (streaming parquet)")
                     full_dataset = MemoryEfficientPretrainDataset(
                         parquet_path=str(self.data_path),
                         sequence_length=self.sequence_length,
@@ -244,6 +245,11 @@ class DataLoaderFactory:
                     val_dataset = Subset(full_dataset, range(train_end, val_end))
                     test_dataset = Subset(full_dataset, range(val_end, n_samples))
                 elif features_path is not None:
+                    if self.verbose:
+                        if logger:
+                            logger.info("  Dataset Backend: PretrainWindowDataset (memmap windows)")
+                        else:
+                            print("  Dataset Backend: PretrainWindowDataset (memmap windows)")
                     # Local import to avoid environment-specific import errors
                     try:
                         from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
@@ -297,6 +303,11 @@ class DataLoaderFactory:
                         stride=self.stride,
                     )
                 else:
+                    if self.verbose:
+                        if logger:
+                            logger.info("  Dataset Backend: PretrainDataset (in-memory)")
+                        else:
+                            print("  Dataset Backend: PretrainDataset (in-memory)")
                     train_dataset = PretrainDataset(
                         X_train,
                         asset_ids=asset_ids_train,
@@ -367,7 +378,8 @@ class DataLoaderFactory:
                     print(msg)
 
             workers = 0 if streaming_active else self.num_workers
-            pin_mem = True if not streaming_active else False
+            # Enable pin_memory when using workers for faster CPU->GPU transfer
+            pin_mem = (workers > 0) and torch.cuda.is_available()
             # Disable shuffle for memmap to avoid random access overhead
             do_shuffle = self.shuffle_train and not use_streaming_memmap
             
@@ -377,8 +389,8 @@ class DataLoaderFactory:
                 shuffle=do_shuffle,
                 num_workers=workers,
                 pin_memory=pin_mem,
-                persistent_workers=False,
-                prefetch_factor=2 if (workers > 0 and not streaming_active) else None,
+                persistent_workers=(workers > 0),
+                prefetch_factor=2 if workers > 0 else None,
             )
 
             val_loader = DataLoader(

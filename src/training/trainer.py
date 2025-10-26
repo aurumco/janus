@@ -70,8 +70,14 @@ class Trainer:
         self.accumulation_steps = max(1, accumulation_steps)
         if self.use_amp:
             self.scaler = AmpGradScaler(device="cuda")
+
+            if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+                self.amp_dtype = torch.bfloat16
+            else:
+                self.amp_dtype = torch.float16
         else:
             self.scaler = None
+            self.amp_dtype = None
         self.gradient_clip = gradient_clip
         self.checkpoint_dir = checkpoint_dir
         self.early_stopping_patience = early_stopping_patience
@@ -259,7 +265,7 @@ class Trainer:
                 batch["targets"] = batch["targets"].to(self.device)
 
             if self.use_amp:
-                with amp_autocast(device_type="cuda"):
+                with amp_autocast(device_type="cuda", dtype=self.amp_dtype):
                     outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     

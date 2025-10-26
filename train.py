@@ -335,6 +335,13 @@ def main() -> None:
         model = nn.DataParallel(model)
     
     model = model.to(device)
+    
+    # Optimization: Compile model for significant speedup (PyTorch 2.0+)
+    try:
+        model = torch.compile(model, mode='reduce-overhead')
+        logger.success("Model compiled with torch.compile (20-40% speedup expected)", indent=1)
+    except Exception as e:
+        logger.warning(f"torch.compile not available: {e}", indent=1)
 
     actual_model = model.module if hasattr(model, 'module') else model
     params = actual_model.get_num_parameters()
