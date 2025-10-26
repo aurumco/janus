@@ -23,8 +23,8 @@ assets:
 pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_1min_dataset.parquet"
-    sequence_length: 256
-    batch_size: 256
+    sequence_length: 128
+    batch_size: 128
     num_features: 16
     masking_ratio: 0.15
     volatility_lookahead: 60
@@ -33,18 +33,18 @@ pretrain:
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
-    num_workers: 4
+    num_workers: 2
     shuffle_train: true
   
   model:
     name: "MambaFoundation"
-    d_model: 256
+    d_model: 192
     d_state: 16
     d_conv: 4
-    n_layers: 8
+    n_layers: 6
     dropout: 0.1
     num_assets: 15
-    asset_embedding_dim: 32
+    asset_embedding_dim: 24
     reconstruction_head_dim: 16
     volatility_head_dim: 1
     use_gradient_checkpointing: true
@@ -97,7 +97,7 @@ finetune:
     train_ratio: 0.75
     val_ratio: 0.15
     test_ratio: 0.10
-    num_workers: 4
+    num_workers: 2
     shuffle_train: true
   
   model:

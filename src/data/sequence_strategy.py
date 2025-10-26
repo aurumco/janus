@@ -78,32 +78,37 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
         return X, y
 
-    def process_gpu(self, gdata: "cudf.DataFrame") -> Tuple[np.ndarray, np.ndarray]:  # type: ignore[name-defined]
+    def process_gpu(self, parquet_path: str) -> Tuple[np.ndarray, np.ndarray]:  # type: ignore[name-defined]
         """GPU-accelerated chunked processing to avoid OOM.
 
         Args:
-            gdata: cuDF DataFrame living in GPU memory.
+            parquet_path: Path to parquet file to read in chunks.
 
         Returns:
             Tuple (X, y) as NumPy arrays (backed by memmap for efficiency).
         """
-        import cupy as cp  # type: ignore
+        import cupy as cp
+        import cudf
         import tempfile
         import os
+        import pyarrow.parquet as pq
 
-        gcols = list(gdata.columns)
+        parquet_file = pq.ParquetFile(parquet_path)
+        total_rows = parquet_file.metadata.num_rows
+        schema_cols = [parquet_file.schema[i].name for i in range(len(parquet_file.schema))]
+        
         if self.feature_columns is None:
-            cols = [c for c in gcols if c != 'asset_id']
+            cols = [c for c in schema_cols if c != 'asset_id']
             if self.target_column is not None and self.target_column in cols:
                 cols.remove(self.target_column)
             feature_cols = cols
         else:
-            feature_cols = [c for c in self.feature_columns if c in gcols and c != 'asset_id']
+            feature_cols = [c for c in self.feature_columns if c in schema_cols and c != 'asset_id']
 
         if len(feature_cols) == 0:
             raise ValueError("No valid feature columns available on GPU path")
 
-        n_timesteps = len(gdata)
+        n_timesteps = total_rows
         n_features = len(feature_cols)
         if n_timesteps < self.sequence_length:
             raise ValueError(
@@ -112,15 +117,15 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
         n_samples = n_timesteps - self.sequence_length + 1
         
-        tmpdir = tempfile.gettempdir()
+        tmpdir = "/kaggle/working" if os.path.exists("/kaggle/working") else tempfile.gettempdir()
         X_path = os.path.join(tmpdir, f"X_seq_{os.getpid()}.dat")
         y_path = os.path.join(tmpdir, f"y_seq_{os.getpid()}.dat")
         
         X_mmap = np.memmap(X_path, dtype=np.float32, mode='w+', shape=(n_samples, self.sequence_length, n_features))
         y_mmap = np.memmap(y_path, dtype=np.float32, mode='w+', shape=(n_samples,))
 
-        chunk_size = min(500000, n_timesteps)
-        print(f"  GPU chunked processing: {n_timesteps} rows, chunk_size={chunk_size}")
+        read_chunk_size = 200000
+        print(f"  GPU chunked processing: {n_timesteps} rows, read_chunk={read_chunk_size}")
         
         try:
             from tqdm import tqdm
@@ -129,18 +134,22 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             pbar = None
 
         written = 0
-        for start_idx in range(0, n_timesteps, chunk_size):
-            end_idx = min(start_idx + chunk_size, n_timesteps)
+        row_offset = 0
+        
+        for batch in parquet_file.iter_batches(batch_size=read_chunk_size):
+            chunk_pd = batch.to_pandas()
+            chunk = cudf.from_pandas(chunk_pd[feature_cols + ([self.target_column] if self.target_column and self.target_column in chunk_pd.columns else [])])
             
-            chunk = gdata.iloc[start_idx:end_idx]
             gfeat = chunk[feature_cols].to_cupy().astype(cp.float32)
             
-            if self.target_column is None or self.target_column not in gcols:
+            if self.target_column is None or self.target_column not in chunk.columns:
                 gtargets = cp.zeros(len(chunk), dtype=cp.float32)
             else:
                 gtargets = chunk[self.target_column].to_cupy().astype(cp.float32)
             
-            chunk_len = end_idx - start_idx
+            row_offset += len(chunk)
+            
+            chunk_len = len(chunk)
             if chunk_len < self.sequence_length:
                 continue
                 
@@ -170,8 +179,10 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             if pbar:
                 pbar.update(actual_write)
             
-            del gfeat, gtargets, X_chunk, y_chunk, X_cpu, y_cpu, chunk
+            del gfeat, gtargets, X_chunk, y_chunk, X_cpu, y_cpu, chunk, chunk_pd
             cp.get_default_memory_pool().free_all_blocks()
+            import gc
+            gc.collect()
         
         if pbar:
             pbar.close()

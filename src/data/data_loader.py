@@ -106,10 +106,11 @@ class DataLoaderFactory:
             if self.use_gpu_preprocess:
                 try:
                     import cudf  # type: ignore
-                    gdata = cudf.read_parquet(str(self.data_path))
-                    print(f"  Loaded cuDF GPU DataFrame: shape={tuple(gdata.shape)}")
+                    gdata = str(self.data_path)
+                    print(f"  Using cuDF GPU processing (chunked read)")
                 except Exception as ge:
                     print(f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU")
+                    gdata = None
             if gdata is None:
                 data = pd.read_parquet(self.data_path, engine="pyarrow")
                 print(f"  Loaded DataFrame: shape={data.shape}")
