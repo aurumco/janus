@@ -264,6 +264,8 @@ class DataLoaderFactory:
                 shuffle=self.shuffle_train,
                 num_workers=workers,
                 pin_memory=pin_mem,
+                persistent_workers=False,
+                prefetch_factor=1 if workers > 0 else None,
             )
 
             val_loader = DataLoader(
@@ -272,6 +274,8 @@ class DataLoaderFactory:
                 shuffle=False,
                 num_workers=workers,
                 pin_memory=pin_mem,
+                persistent_workers=False,
+                prefetch_factor=1 if workers > 0 else None,
             )
 
             test_loader = DataLoader(
@@ -280,6 +284,8 @@ class DataLoaderFactory:
                 shuffle=False,
                 num_workers=workers,
                 pin_memory=pin_mem,
+                persistent_workers=False,
+                prefetch_factor=1 if workers > 0 else None,
             )
 
             elapsed = time.time() - start_time

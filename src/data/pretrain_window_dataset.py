@@ -39,10 +39,11 @@ class PretrainWindowDataset(Dataset):
         
         try:
             import mmap
-            if hasattr(mmap, 'MADV_SEQUENTIAL'):
-                import ctypes
-                libc = ctypes.CDLL('libc.so.6')
-                libc.madvise(self.features_mm.ctypes.data, self.features_mm.nbytes, mmap.MADV_SEQUENTIAL)
+            import ctypes
+            libc = ctypes.CDLL('libc.so.6')
+            advise_flag = getattr(mmap, 'MADV_RANDOM', None)
+            if advise_flag is not None:
+                libc.madvise(self.features_mm.ctypes.data, self.features_mm.nbytes, advise_flag)
         except Exception:
             pass
         self.n_timesteps = n_timesteps
@@ -65,10 +66,20 @@ class PretrainWindowDataset(Dataset):
         i = self.start_index + idx
         end = i + self.sequence_length
 
-        window_np = self.features_mm[i:end, :]
-        if window_np.dtype != np.float32:
-            window_np = window_np.astype(np.float32)
-        original_sequence = torch.from_numpy(np.array(window_np, copy=True))
+        window_view = self.features_mm[i:end, :]
+        if window_view.dtype != np.float32:
+            window_view = window_view.astype(np.float32)
+        original_sequence = torch.tensor(window_view, dtype=torch.float32)
+        try:
+            import ctypes, mmap
+            libc = ctypes.CDLL('libc.so.6')
+            addr = window_view.ctypes.data
+            nbytes = int(window_view.nbytes)
+            if hasattr(mmap, 'MADV_DONTNEED'):
+                libc.madvise(addr, nbytes, mmap.MADV_DONTNEED)
+        except Exception:
+            pass
+        del window_view
         asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)
 
         mask_binary = self._generate_smart_mask(original_sequence)
@@ -78,13 +89,23 @@ class PretrainWindowDataset(Dataset):
 
         future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
         if future_end_idx > end:
-            prices = self.features_mm[end:future_end_idx, self.price_column_idx]
-            if len(prices) > 1:
-                prices_arr = np.array(prices, dtype=np.float32)
+            prices_view = self.features_mm[end:future_end_idx, self.price_column_idx]
+            if len(prices_view) > 1:
+                prices_arr = np.array(prices_view, dtype=np.float32, copy=False)
                 log_returns = np.log((prices_arr[1:] + 1e-8) / (prices_arr[:-1] + 1e-8))
                 volatility = torch.tensor(float(np.std(log_returns)), dtype=torch.float32)
             else:
                 volatility = torch.tensor(0.0, dtype=torch.float32)
+            try:
+                import ctypes, mmap
+                libc = ctypes.CDLL('libc.so.6')
+                addr = prices_view.ctypes.data
+                nbytes = int(prices_view.nbytes)
+                if hasattr(mmap, 'MADV_DONTNEED'):
+                    libc.madvise(addr, nbytes, mmap.MADV_DONTNEED)
+            except Exception:
+                pass
+            del prices_view
         else:
             volatility = torch.tensor(0.0, dtype=torch.float32)
 
