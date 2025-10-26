@@ -148,7 +148,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python inspect_dataset.py --path outputs/datasets/pre-train/parquet/janus_pretrain_1min_dataset.parquet
+  python inspect_dataset.py --path outputs/datasets/pre-train/parquet/janus_pretrain_5min_dataset.parquet
   python inspect_dataset.py --path dataset.parquet --head 10 --tail 5
   python inspect_dataset.py --path dataset.csv --no-stats --no-nulls
         """

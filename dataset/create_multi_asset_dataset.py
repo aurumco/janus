@@ -227,7 +227,7 @@ class MultiAssetDatasetBuilder:
             csv_path: Path to CSV file.
             symbol: Asset symbol.
             asset_id: Numeric asset ID.
-            timeframe: Target timeframe (e.g., "30min" or "1min").
+            timeframe: Target timeframe (e.g., "30min" or "5min").
             start_date: Start date filter.
             end_date: End date filter.
 

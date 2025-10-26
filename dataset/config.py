@@ -16,7 +16,7 @@ class DatasetConfig:
     mode: str = "fine-tune"  # "pre-train", "fine-tune", or "both"
     
     # Timeframe configuration
-    pretrain_timeframe: str = "1min"
+    pretrain_timeframe: str = "5min"
     finetune_timeframe: str = "30min"
     asset: str = "Multi-Asset"
     base_timeframe: str = "30min"
@@ -110,7 +110,7 @@ class DatasetConfig:
     def _configure_paths(self) -> None:
         """Configure output paths based on mode."""
         if self.mode == "pre-train":
-            prefix = "janus_pretrain_1min"
+            prefix = "janus_pretrain_5min"
             self.base_timeframe = self.pretrain_timeframe
             self.input_window_candles = self.pretrain_input_window
         elif self.mode == "fine-tune":

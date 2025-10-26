@@ -19,12 +19,12 @@ assets:
   - "ATOMUSDT"
   - "ETCUSDT"
 
-# Pre-training configuration for SSL on 1min multi-asset data
+# Pre-training configuration for SSL on 5min multi-asset data
 pretrain:
   data:
-    path: "/kaggle/input/janusds/janus_pretrain_1min_dataset.parquet"
-    sequence_length: 32
-    batch_size: 4
+    path: "/kaggle/input/janusds/janus_pretrain_5min_dataset.parquet"
+    sequence_length: 128
+    batch_size: 32
     num_features: 16
     masking_ratio: 0.15
     volatility_lookahead: 60
@@ -38,10 +38,10 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 64
-    d_state: 8
+    d_model: 192
+    d_state: 16
     d_conv: 4
-    n_layers: 2
+    n_layers: 6
     dropout: 0.1
     num_assets: 15
     asset_embedding_dim: 24
@@ -57,7 +57,7 @@ pretrain:
     scheduler: "cosine"
     warmup_epochs: 10
     gradient_clip: 0.5
-    accumulation_steps: 16
+    accumulation_steps: 4
     early_stopping_patience: 20
     early_stopping_min_delta: 0.00001
     save_best_only: true
