@@ -1,6 +1,6 @@
 """Sequence-based data processing strategy."""
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -13,8 +13,8 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
     def __init__(
         self,
-        feature_columns: List[str],
-        target_column: str,
+        feature_columns: Optional[List[str]],
+        target_column: Optional[str],
         sequence_length: int,
     ) -> None:
         """Initialize sequence processing strategy.
@@ -37,8 +37,16 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         Returns:
             True if all required columns are present.
         """
-        required_columns = self.feature_columns + [self.target_column]
-        return all(col in data.columns for col in required_columns)
+        # If feature_columns is None, we'll derive features dynamically; skip strict validation.
+        if self.feature_columns is None and self.target_column is None:
+            return True
+        # Build required columns list based on provided inputs
+        required: List[str] = []
+        if self.feature_columns is not None:
+            required.extend(self.feature_columns)
+        if self.target_column is not None:
+            required.append(self.target_column)
+        return all(col in data.columns for col in required)
 
     def process(self, data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """Convert DataFrame to sequences.
@@ -51,11 +59,26 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             and y has shape (n_samples,).
         """
         if not self.validate(data):
-            missing = set(self.feature_columns + [self.target_column]) - set(data.columns)
+            # Compute missing only from provided columns
+            missing = set((self.feature_columns or []) + ([self.target_column] if self.target_column else [])) - set(data.columns)
             raise ValueError(f"Missing required columns: {missing}")
 
-        features = data[self.feature_columns].values
-        targets = data[self.target_column].values
+        # Determine feature columns dynamically if not provided
+        if self.feature_columns is None:
+            cols = [c for c in data.columns if c != 'asset_id']
+            if self.target_column is not None:
+                cols = [c for c in cols if c != self.target_column]
+            feature_cols = cols
+        else:
+            # Always exclude 'asset_id' from features if accidentally included
+            feature_cols = [c for c in self.feature_columns if c != 'asset_id']
+
+        features = data[feature_cols].values
+        # If no target column provided (pretrain mode), create a dummy target vector
+        if self.target_column is None or self.target_column not in data.columns:
+            targets = np.zeros(len(data), dtype=np.float32)
+        else:
+            targets = data[self.target_column].values
 
         X, y = self._create_sequences(features, targets)
 
