@@ -23,8 +23,8 @@ assets:
 pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
-    sequence_length: 72
-    batch_size: 34
+    sequence_length: 48
+    batch_size: 16
     num_features: 16
     use_gpu_preprocess: false
     masking_ratio: 0.15
