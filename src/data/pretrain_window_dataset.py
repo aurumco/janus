@@ -52,7 +52,10 @@ class PretrainWindowDataset(Dataset):
         self.sequence_length = sequence_length
         self.start_index = start_index
         self.end_index = end_index
-        self.n_samples = max(0, min(end_index, n_timesteps - sequence_length + 1) - start_index)
+        # Use stride=2 to reduce samples by half for faster training
+        self.stride = 2
+        max_samples = (n_timesteps - sequence_length) // self.stride + 1
+        self.n_samples = max(0, min((end_index - start_index) // self.stride, max_samples))
 
         self.masking_ratio = masking_ratio
         self.volatility_lookahead = volatility_lookahead
@@ -64,7 +67,7 @@ class PretrainWindowDataset(Dataset):
         return self.n_samples
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        i = self.start_index + idx
+        i = self.start_index + (idx * self.stride)
         end = i + self.sequence_length
 
         # Direct copy to avoid view overhead

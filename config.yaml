@@ -23,8 +23,8 @@ assets:
 pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
-    sequence_length: 72
-    batch_size: 34
+    sequence_length: 64
+    batch_size: 64
     num_features: 16
     use_gpu_preprocess: true
     masking_ratio: 0.15
@@ -49,18 +49,18 @@ pretrain:
     asset_embedding_dim: 24
     reconstruction_head_dim: 16
     volatility_head_dim: 1
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
   
   training:
-    epochs: 100
+    epochs: 50
     learning_rate: 0.00005
     weight_decay: 0.01
     optimizer: "adamw"
     scheduler: "cosine"
-    warmup_epochs: 10
+    warmup_epochs: 5
     gradient_clip: 0.5
-    accumulation_steps: 4
-    early_stopping_patience: 15
+    accumulation_steps: 1
+    early_stopping_patience: 5
     early_stopping_min_delta: 0.00001
     save_best_only: true
   

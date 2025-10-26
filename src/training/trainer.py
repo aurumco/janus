@@ -7,10 +7,7 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-try:
-    from torch.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
-except Exception:
-    from torch.cuda.amp import GradScaler as AmpGradScaler, autocast as amp_autocast  # type: ignore
+from torch.amp import GradScaler as AmpGradScaler, autocast as amp_autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
@@ -65,10 +62,7 @@ class Trainer:
         self.use_amp = use_amp
         self.accumulation_steps = max(1, accumulation_steps)
         if self.use_amp:
-            try:
-                self.scaler = AmpGradScaler(device_type="cuda")  # type: ignore[arg-type]
-            except TypeError:
-                self.scaler = AmpGradScaler()
+            self.scaler = AmpGradScaler(device="cuda")
         else:
             self.scaler = None
         self.gradient_clip = gradient_clip
@@ -119,7 +113,7 @@ class Trainer:
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Backbone {status}. Trainable parameters: {trainable:,}")
 
-    def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
+    def train_epoch(self, train_loader: DataLoader, epoch: int, epochs: int = 100) -> Dict[str, float]:
         """Train for one epoch.
 
         Args:
@@ -133,7 +127,14 @@ class Trainer:
         total_loss = 0.0
         loss_components = {}
 
-        progress = tqdm(train_loader, total=len(train_loader), desc=f"Train {epoch}", leave=False)
+        progress = tqdm(
+            train_loader, 
+            total=len(train_loader), 
+            desc=f"Epoch {epoch}/{epochs} [Train]",
+            leave=False,
+            ncols=100,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+        )
         for batch_idx, batch_data in enumerate(progress):
             # Handle both tuple (inputs, targets) and dict formats
             if isinstance(batch_data, dict):
@@ -151,11 +152,7 @@ class Trainer:
                 batch["targets"] = batch["targets"].to(self.device)
 
             if self.use_amp:
-                try:
-                    ctx = amp_autocast(device_type="cuda")
-                except TypeError:
-                    ctx = amp_autocast()
-                with ctx:
+                with amp_autocast(device_type="cuda"):
                     outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     
@@ -244,7 +241,14 @@ class Trainer:
         loss_components = {}
 
         with torch.no_grad():
-            vprogress = tqdm(val_loader, total=len(val_loader), desc=f"Val {epoch}", leave=False)
+            vprogress = tqdm(
+                val_loader, 
+                total=len(val_loader), 
+                desc=f"Epoch {epoch} [Val]",
+                leave=False,
+                ncols=100,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}]'
+            )
             for batch_idx, batch_data in enumerate(vprogress):
                 # Handle both tuple and dict formats
                 if isinstance(batch_data, dict):
@@ -330,7 +334,7 @@ class Trainer:
                 elif epoch == freeze_backbone_epochs + 1:
                     self.freeze_backbone(freeze=False)
 
-            train_metrics = self.train_epoch(train_loader, epoch)
+            train_metrics = self.train_epoch(train_loader, epoch, epochs)
             val_metrics = self.validate(val_loader, epoch)
 
             # Warmup phase: linearly increase LR
