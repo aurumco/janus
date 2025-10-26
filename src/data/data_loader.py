@@ -118,14 +118,6 @@ class DataLoaderFactory:
             print("- Processing sequences (vectorized sliding windows)...")
             if gdata is not None and self.use_gpu_preprocess:
                 X, y = self.processing_strategy.process_gpu(gdata)
-                try:
-                    import cupy as cp  # type: ignore
-                    if isinstance(X, cp.ndarray):
-                        X = cp.asnumpy(X)
-                    if isinstance(y, cp.ndarray):
-                        y = cp.asnumpy(y)
-                except Exception:
-                    pass
             else:
                 X, y = self.processing_strategy.process(data)
             print(f"  Sequences: X={X.shape}, y={y.shape}")

@@ -78,16 +78,18 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
         return X, y
 
-    def process_gpu(self, gdata: "cudf.DataFrame") -> Tuple["cupy.ndarray", "cupy.ndarray"]:  # type: ignore[name-defined]
-        """GPU-accelerated processing using cuDF/CuPy.
+    def process_gpu(self, gdata: "cudf.DataFrame") -> Tuple[np.ndarray, np.ndarray]:  # type: ignore[name-defined]
+        """GPU-accelerated chunked processing to avoid OOM.
 
         Args:
             gdata: cuDF DataFrame living in GPU memory.
 
         Returns:
-            Tuple (X, y) as CuPy arrays with shapes (n_samples, seq_len, n_features) and (n_samples,).
+            Tuple (X, y) as NumPy arrays (backed by memmap for efficiency).
         """
         import cupy as cp  # type: ignore
+        import tempfile
+        import os
 
         gcols = list(gdata.columns)
         if self.feature_columns is None:
@@ -101,37 +103,91 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if len(feature_cols) == 0:
             raise ValueError("No valid feature columns available on GPU path")
 
-        gfeat = gdata[feature_cols]
-        features = gfeat.to_cupy()
-
-        if self.target_column is None or self.target_column not in gcols:
-            targets = cp.zeros((features.shape[0],), dtype=cp.float32)
-        else:
-            targets = gdata[self.target_column].to_cupy()
-
-        n_timesteps = features.shape[0]
+        n_timesteps = len(gdata)
+        n_features = len(feature_cols)
         if n_timesteps < self.sequence_length:
             raise ValueError(
                 f"Not enough data points. Need at least {self.sequence_length}, got {n_timesteps}"
             )
 
-        try:
-            from cupy.lib.stride_tricks import sliding_window_view as cp_sliding_window_view  # type: ignore
-            X_view = cp_sliding_window_view(features, (self.sequence_length, features.shape[1]))
-            if X_view.ndim == 4:
-                X = X_view[:, 0, :, :]
-            else:
-                X = cp_sliding_window_view(features, self.sequence_length)
-                X = X.reshape(-1, self.sequence_length, features.shape[1])
-        except Exception:
-            n_samples = n_timesteps - self.sequence_length + 1
-            X = cp.empty((n_samples, self.sequence_length, features.shape[1]), dtype=cp.float32)
-            for i in range(n_samples):
-                X[i] = features[i:i + self.sequence_length]
+        n_samples = n_timesteps - self.sequence_length + 1
+        
+        tmpdir = tempfile.gettempdir()
+        X_path = os.path.join(tmpdir, f"X_seq_{os.getpid()}.dat")
+        y_path = os.path.join(tmpdir, f"y_seq_{os.getpid()}.dat")
+        
+        X_mmap = np.memmap(X_path, dtype=np.float32, mode='w+', shape=(n_samples, self.sequence_length, n_features))
+        y_mmap = np.memmap(y_path, dtype=np.float32, mode='w+', shape=(n_samples,))
 
-        y = targets[self.sequence_length - 1: self.sequence_length - 1 + X.shape[0]].astype(cp.float32)
-        if X.dtype != cp.float32:
-            X = X.astype(cp.float32, copy=False)
+        chunk_size = min(500000, n_timesteps)
+        print(f"  GPU chunked processing: {n_timesteps} rows, chunk_size={chunk_size}")
+        
+        try:
+            from tqdm import tqdm
+            pbar = tqdm(total=n_samples, desc="  Building sequences", unit="seq")
+        except Exception:
+            pbar = None
+
+        written = 0
+        for start_idx in range(0, n_timesteps, chunk_size):
+            end_idx = min(start_idx + chunk_size, n_timesteps)
+            
+            chunk = gdata.iloc[start_idx:end_idx]
+            gfeat = chunk[feature_cols].to_cupy().astype(cp.float32)
+            
+            if self.target_column is None or self.target_column not in gcols:
+                gtargets = cp.zeros(len(chunk), dtype=cp.float32)
+            else:
+                gtargets = chunk[self.target_column].to_cupy().astype(cp.float32)
+            
+            chunk_len = end_idx - start_idx
+            if chunk_len < self.sequence_length:
+                continue
+                
+            try:
+                from cupy.lib.stride_tricks import as_strided
+                n_win = chunk_len - self.sequence_length + 1
+                shape = (n_win, self.sequence_length, n_features)
+                strides = (gfeat.strides[0], gfeat.strides[0], gfeat.strides[1])
+                X_chunk = as_strided(gfeat, shape=shape, strides=strides)
+            except Exception:
+                n_win = chunk_len - self.sequence_length + 1
+                X_chunk = cp.empty((n_win, self.sequence_length, n_features), dtype=cp.float32)
+                for i in range(n_win):
+                    X_chunk[i] = gfeat[i:i + self.sequence_length]
+            
+            y_chunk = gtargets[self.sequence_length - 1: self.sequence_length - 1 + n_win]
+            
+            X_cpu = cp.asnumpy(X_chunk)
+            y_cpu = cp.asnumpy(y_chunk)
+            
+            end_write = min(written + len(X_cpu), n_samples)
+            actual_write = end_write - written
+            X_mmap[written:end_write] = X_cpu[:actual_write]
+            y_mmap[written:end_write] = y_cpu[:actual_write]
+            written = end_write
+            
+            if pbar:
+                pbar.update(actual_write)
+            
+            del gfeat, gtargets, X_chunk, y_chunk, X_cpu, y_cpu, chunk
+            cp.get_default_memory_pool().free_all_blocks()
+        
+        if pbar:
+            pbar.close()
+        
+        X_mmap.flush()
+        y_mmap.flush()
+        X = np.array(X_mmap[:written], dtype=np.float32)
+        y = np.array(y_mmap[:written], dtype=np.float32)
+        
+        del X_mmap, y_mmap
+        try:
+            os.unlink(X_path)
+            os.unlink(y_path)
+        except Exception:
+            pass
+        
         return X, y
 
     def _create_sequences(
