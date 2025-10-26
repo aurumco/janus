@@ -2,9 +2,22 @@
 
 from pathlib import Path
 from typing import Dict, Optional
+import gc
+import time
 
 import pandas as pd
 from torch.utils.data import DataLoader
+
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):  # type: ignore
+        return iterable if iterable is not None else range(0)
+
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover
+    psutil = None  # type: ignore
 
 from .base_strategy import DataProcessingStrategy
 from .finetune_dataset import FineTuneDataset
@@ -77,100 +90,126 @@ class DataLoaderFactory:
         Returns:
             Dictionary with 'train', 'val', and 'test' DataLoaders.
         """
-        data = pd.read_parquet(self.data_path)
+        start_time = time.time()
+        def mem_info(prefix: str) -> None:
+            if psutil:
+                mi = psutil.Process().memory_info()
+                print(f"{prefix} | RSS={mi.rss/1e9:.2f} GB, VMS={mi.vms/1e9:.2f} GB")
 
-        X, y = self.processing_strategy.process(data)
-        
-        asset_ids = None
-        if self.mode == "pretrain" and "asset_id" in data.columns:
-            import numpy as np
-            asset_ids = data["asset_id"].values.astype(np.int64)
+        try:
+            print("- Reading parquet file...")
+            mem_info("  Before read")
+            data = pd.read_parquet(self.data_path, engine="pyarrow")
+            print(f"  Loaded DataFrame: shape={data.shape}")
+            mem_info("  After read")
 
-        n_samples = len(X)
-        train_end = int(n_samples * self.train_ratio)
-        val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+            print("- Processing sequences (vectorized sliding windows)...")
+            X, y = self.processing_strategy.process(data)
+            print(f"  Sequences: X={X.shape}, y={y.shape}")
+            mem_info("  After process")
 
-        X_train = X[:train_end]
-        y_train = y[:train_end]
+            print("- Splitting train/val/test...")
+            n_samples = len(X)
+            train_end = int(n_samples * self.train_ratio)
+            val_end = int(n_samples * (self.train_ratio + self.val_ratio))
 
-        X_val = X[train_end:val_end]
-        y_val = y[train_end:val_end]
-        
-        X_test = X[val_end:]
-        y_test = y[val_end:]
-        
-        if asset_ids is not None:
-            asset_ids_train = asset_ids[:train_end]
-            asset_ids_val = asset_ids[train_end:val_end]
-            asset_ids_test = asset_ids[val_end:]
-        else:
-            import numpy as np
-            asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
-            asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
-            asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
+            X_train = X[:train_end]
+            y_train = y[:train_end]
 
-        if self.mode == "pretrain":
-            train_dataset = PretrainDataset(
-                X_train,
-                asset_ids=asset_ids_train,
-                sequence_length=self.sequence_length,
-                masking_ratio=self.masking_ratio,
-                volatility_lookahead=self.volatility_lookahead,
-                smart_masking_prob=self.smart_masking_prob,
-                cross_asset_masking_prob=self.cross_asset_masking_prob,
+            X_val = X[train_end:val_end]
+            y_val = y[train_end:val_end]
+            
+            X_test = X[val_end:]
+            y_test = y[val_end:]
+
+            asset_ids = None
+            if self.mode == "pretrain" and "asset_id" in data.columns:
+                import numpy as np
+                asset_ids = data["asset_id"].values.astype(np.int64)
+                asset_ids = asset_ids[self.sequence_length - 1: self.sequence_length - 1 + n_samples]
+                asset_ids_train = asset_ids[:train_end]
+                asset_ids_val = asset_ids[train_end:val_end]
+                asset_ids_test = asset_ids[val_end:]
+            else:
+                import numpy as np
+                asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
+                asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
+                asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
+
+            print("- Building PyTorch datasets...")
+            if self.mode == "pretrain":
+                train_dataset = PretrainDataset(
+                    X_train,
+                    asset_ids=asset_ids_train,
+                    sequence_length=self.sequence_length,
+                    masking_ratio=self.masking_ratio,
+                    volatility_lookahead=self.volatility_lookahead,
+                    smart_masking_prob=self.smart_masking_prob,
+                    cross_asset_masking_prob=self.cross_asset_masking_prob,
+                )
+                val_dataset = PretrainDataset(
+                    X_val,
+                    asset_ids=asset_ids_val,
+                    sequence_length=self.sequence_length,
+                    masking_ratio=self.masking_ratio,
+                    volatility_lookahead=self.volatility_lookahead,
+                    smart_masking_prob=self.smart_masking_prob,
+                    cross_asset_masking_prob=self.cross_asset_masking_prob,
+                )
+                test_dataset = PretrainDataset(
+                    X_test,
+                    asset_ids=asset_ids_test,
+                    sequence_length=self.sequence_length,
+                    masking_ratio=self.masking_ratio,
+                    volatility_lookahead=self.volatility_lookahead,
+                    smart_masking_prob=self.smart_masking_prob,
+                    cross_asset_masking_prob=self.cross_asset_masking_prob,
+                )
+            else:
+                train_dataset = FineTuneDataset(X_train, y_train)
+                val_dataset = FineTuneDataset(X_val, y_val)
+                test_dataset = FineTuneDataset(X_test, y_test)
+
+            print("- Creating DataLoader objects...")
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.batch_size,
+                shuffle=self.shuffle_train,
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
-            val_dataset = PretrainDataset(
-                X_val,
-                asset_ids=asset_ids_val,
-                sequence_length=self.sequence_length,
-                masking_ratio=self.masking_ratio,
-                volatility_lookahead=self.volatility_lookahead,
-                smart_masking_prob=self.smart_masking_prob,
-                cross_asset_masking_prob=self.cross_asset_masking_prob,
+
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
-            test_dataset = PretrainDataset(
-                X_test,
-                asset_ids=asset_ids_test,
-                sequence_length=self.sequence_length,
-                masking_ratio=self.masking_ratio,
-                volatility_lookahead=self.volatility_lookahead,
-                smart_masking_prob=self.smart_masking_prob,
-                cross_asset_masking_prob=self.cross_asset_masking_prob,
+
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
-        else:
-            train_dataset = FineTuneDataset(X_train, y_train)
-            val_dataset = FineTuneDataset(X_val, y_val)
-            test_dataset = FineTuneDataset(X_test, y_test)
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle_train,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+            elapsed = time.time() - start_time
+            print(f"✓ Data loaders ready in {elapsed:.2f}s")
+            mem_info("  Final")
 
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
-
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
-
-        return {
-            "train": train_loader,
-            "val": val_loader,
-            "test": test_loader,
-        }
+            return {
+                "train": train_loader,
+                "val": val_loader,
+                "test": test_loader,
+            }
+        except Exception as e:
+            print("! Error while creating data loaders")
+            print(f"  Exception: {type(e).__name__}: {e}")
+            mem_info("  On error")
+            gc.collect()
+            raise
 
     def get_dataset_info(self) -> Dict[str, int]:
         """Get information about the dataset.
@@ -178,7 +217,7 @@ class DataLoaderFactory:
         Returns:
             Dictionary with dataset statistics.
         """
-        data = pd.read_parquet(self.data_path)
+        data = pd.read_parquet(self.data_path, engine="pyarrow")
         X, y = self.processing_strategy.process(data)
 
         import numpy as np

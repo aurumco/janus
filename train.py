@@ -211,7 +211,21 @@ def main() -> None:
         )
 
     print("Creating data loaders...")
-    data_loaders = data_factory.create_data_loaders()
+    try:
+        start_dl = datetime.now()
+        data_loaders = data_factory.create_data_loaders()
+        end_dl = datetime.now()
+        print(f"Data loaders created in {(end_dl - start_dl).total_seconds():.2f}s\n")
+    except MemoryError as me:
+        print("! MemoryError while creating data loaders. Try reducing batch size or sequence length.")
+        print(f"  Details: {me}")
+        raise
+    except Exception as e:
+        import traceback
+        print("! Failed to create data loaders.")
+        print(f"  Exception: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise
 
     train_loader = data_loaders['train']
     val_loader = data_loaders['val']
