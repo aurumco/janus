@@ -27,6 +27,7 @@ class PretrainWindowDataset(Dataset):
         smart_masking_prob: float = 0.4,
         cross_asset_masking_prob: float = 0.3,
         price_column_idx: int = 0,
+        stride: int = 4,
     ) -> None:
         self.features_mm = np.memmap(
             features_memmap_path, dtype=np.float32, mode="r", shape=(n_timesteps, n_features)
@@ -52,9 +53,7 @@ class PretrainWindowDataset(Dataset):
         self.sequence_length = sequence_length
         self.start_index = start_index
         self.end_index = end_index
-        # Use stride=4 to reduce samples significantly for faster training
-        # This maintains data diversity while reducing computation ~4x
-        self.stride = 4
+        self.stride = stride
         max_samples = (n_timesteps - sequence_length) // self.stride + 1
         self.n_samples = max(0, min((end_index - start_index) // self.stride, max_samples))
 

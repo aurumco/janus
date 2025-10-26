@@ -205,6 +205,7 @@ def main() -> None:
             use_gpu_preprocess=use_gpu_pre,
             use_streaming_fallback=use_streaming_fallback,
             verbose=True,
+            stride=config.get('data.stride', 4),
         )
     else:
         # Fine-tuning mode
@@ -280,7 +281,7 @@ def main() -> None:
             
             if checkpoint_path_obj.exists():
                 checkpoint_path = args.load_checkpoint
-                print(f"✓ Found checkpoint: {checkpoint_path}")
+                logger.success(f"Found checkpoint: {checkpoint_path}", indent=1)
             else:
                 possible_paths = [
                     Path("/kaggle/input") / args.load_checkpoint,
@@ -291,16 +292,16 @@ def main() -> None:
                 for alt_path in possible_paths:
                     if alt_path.exists():
                         checkpoint_path = str(alt_path)
-                        print(f"✓ Found checkpoint at alternative path: {checkpoint_path}")
+                        logger.success(f"Found checkpoint at alternative path: {checkpoint_path}", indent=1)
                         break
                 
                 if checkpoint_path is None:
-                    print(f"⚠ WARNING: Checkpoint not found: {args.load_checkpoint}")
-                    print(f"⚠ Checked paths:")
-                    print(f"  - {checkpoint_path_obj}")
+                    logger.warning(f"Checkpoint not found: {args.load_checkpoint}", indent=1)
+                    logger.info("Checked paths:", indent=1)
+                    logger.info(f"- {checkpoint_path_obj}", indent=2)
                     for p in possible_paths:
-                        print(f"  - {p}")
-                    print(f"⚠ Falling back to random initialization")
+                        logger.info(f"- {p}", indent=2)
+                    logger.warning("Falling back to random initialization", indent=1)
         
         try:
             model = MambaRegressor(
@@ -314,8 +315,8 @@ def main() -> None:
                 pretrained_checkpoint_path=checkpoint_path,
             )
         except Exception as e:
-            print(f"⚠ ERROR loading checkpoint: {e}")
-            print(f"⚠ Falling back to random initialization")
+            logger.error(f"Error loading checkpoint: {e}", indent=1)
+            logger.warning("Falling back to random initialization", indent=1)
             model = MambaRegressor(
                 input_dim=config.get('data.num_features'),
                 d_model=config.get('model.d_model'),
@@ -463,11 +464,12 @@ def main() -> None:
         use_amp=full_config.get('device.mixed_precision', True),
         warmup_epochs=config.get('training.warmup_epochs', 0),
         accumulation_steps=config.get('training.accumulation_steps', 1),
+        checkpoint_interval=full_config.get('logging.checkpoint_interval', 10),
     )
     
     if mode == 'finetune' and config.get('training.freeze_backbone_epochs', 0) > 0:
         freeze_epochs = config.get('training.freeze_backbone_epochs')
-        print(f"\nWill freeze backbone for first {freeze_epochs} epochs")
+        logger.info(f"Will freeze backbone for first {freeze_epochs} epochs", indent=1)
 
     # Try to resume training from checkpoint
     if args.resume:
@@ -515,7 +517,7 @@ def main() -> None:
         evaluator.print_metrics(test_metrics)
         evaluator.save_metrics(test_metrics, results_dir / 'evaluation_metrics.txt')
 
-        print("Creating visualizations...")
+        logger.info("Creating visualizations...", indent=1)
         if full_config.get('evaluation.plot_predictions', True):
             visualizer.plot_predictions(
                 test_metrics['y_true'],
@@ -529,7 +531,7 @@ def main() -> None:
                 results_dir / 'residuals.png'
             )
     else:
-        print("\nEvaluating SSL pre-training metrics...")
+        logger.section("Evaluation (Pre-training)")
         pretrain_evaluator = PretrainEvaluator(model=model, device=device)
         ssl_metrics = pretrain_evaluator.evaluate(val_loader)
         pretrain_evaluator.print_metrics(ssl_metrics)
@@ -568,11 +570,12 @@ def main() -> None:
     except Exception:
         pass
     
-    print(f"\nExports saved: {export_dir}")
-
-    print(f"\nAll results saved to: {results_dir}")
-    print(f"Checkpoints saved to: {checkpoint_dir}")
-    print("\nTraining pipeline completed successfully!")
+    logger.blank_line()
+    logger.success(f"Exports saved: {export_dir}", indent=0)
+    logger.success(f"Results saved: {results_dir}", indent=0)
+    logger.success(f"Checkpoints saved: {checkpoint_dir}", indent=0)
+    logger.blank_line()
+    logger.header("Training Pipeline Completed Successfully")
 
 
 if __name__ == '__main__':

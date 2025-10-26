@@ -26,6 +26,7 @@ pretrain:
     sequence_length: 72
     batch_size: 64
     num_features: 16
+    stride: 4  # Window stride: 1=all samples, 2=half, 4=quarter, 8=eighth (faster training)
     use_gpu_preprocess: true
     masking_ratio: 0.15
     volatility_lookahead: 60
@@ -52,7 +53,7 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 50
+    epochs: 10
     learning_rate: 0.00005
     weight_decay: 0.01
     optimizer: "adamw"
@@ -151,6 +152,7 @@ device:
 logging:
   log_interval: 10
   save_interval: 1
+  checkpoint_interval: 10  # Save full checkpoint every N epochs for resumable training
   tensorboard: true
   wandb: false
 

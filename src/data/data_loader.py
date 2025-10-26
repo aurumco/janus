@@ -56,6 +56,7 @@ class DataLoaderFactory:
         use_gpu_preprocess: bool = True,
         use_streaming_fallback: bool = False,
         verbose: bool = False,
+        stride: int = 4,
     ) -> None:
         """Initialize data loader factory.
 
@@ -92,6 +93,7 @@ class DataLoaderFactory:
         self.use_gpu_preprocess = use_gpu_preprocess
         self.use_streaming_fallback = use_streaming_fallback
         self.verbose = verbose
+        self.stride = stride
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -264,6 +266,7 @@ class DataLoaderFactory:
                         volatility_lookahead=self.volatility_lookahead,
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
+                        stride=self.stride,
                     )
                     val_dataset = PretrainWindowDataset(
                         features_memmap_path=features_path,
@@ -277,6 +280,7 @@ class DataLoaderFactory:
                         volatility_lookahead=self.volatility_lookahead,
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
+                        stride=self.stride,
                     )
                     test_dataset = PretrainWindowDataset(
                         features_memmap_path=features_path,
@@ -290,6 +294,7 @@ class DataLoaderFactory:
                         volatility_lookahead=self.volatility_lookahead,
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
+                        stride=self.stride,
                     )
                 else:
                     train_dataset = PretrainDataset(

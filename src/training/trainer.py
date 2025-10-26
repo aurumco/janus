@@ -41,6 +41,7 @@ class Trainer:
         use_amp: bool = False,
         warmup_epochs: int = 0,
         accumulation_steps: int = 1,
+        checkpoint_interval: int = 10,
     ) -> None:
         """Initialize trainer.
 
@@ -75,6 +76,7 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_min_delta = early_stopping_min_delta
+        self.checkpoint_interval = checkpoint_interval
 
         if checkpoint_dir:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -153,13 +155,14 @@ class Trainer:
             'history': self.history,
         }
         
-        # Save latest checkpoint
+        # Save latest checkpoint (always)
         latest_path = self.checkpoint_dir / 'checkpoint_latest.pt'
         torch.save(checkpoint, latest_path)
         
-        # Save epoch checkpoint
-        epoch_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pt'
-        torch.save(checkpoint, epoch_path)
+        # Save periodic full checkpoint every N epochs
+        if epoch % self.checkpoint_interval == 0:
+            epoch_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pt'
+            torch.save(checkpoint, epoch_path)
         
         # Save best model
         if is_best:
@@ -209,12 +212,12 @@ class Trainer:
             self.patience_counter = checkpoint['patience_counter']
             self.history = checkpoint['history']
             
-            print(f"\n✓ Resumed from epoch {checkpoint['epoch']}")
-            print(f"  Best validation loss: {self.best_val_loss:.6f}")
+            logger.success(f"Resumed from epoch {checkpoint['epoch']}", indent=1)
+            logger.metric("Best validation loss", f"{self.best_val_loss:.6f}", indent=1)
             
             return True
         except Exception as e:
-            print(f"\n✗ Failed to load checkpoint: {e}")
+            logger.error(f"Failed to load checkpoint: {e}", indent=1)
             return False
 
     def train_epoch(self, train_loader: DataLoader, epoch: int, epochs: int = 100) -> Dict[str, float]:
@@ -436,7 +439,7 @@ class Trainer:
         for epoch in range(self.start_epoch, epochs + 1):
             if self.interrupted:
                 self.save_checkpoint(epoch - 1, is_interrupted=True)
-                print("\n✓ Checkpoint saved. Training stopped gracefully.")
+                logger.success("Checkpoint saved. Training stopped gracefully.", indent=1)
                 break
                 
             epoch_start_time = time.time()
@@ -451,7 +454,7 @@ class Trainer:
             
             if self.interrupted:
                 self.save_checkpoint(epoch, is_interrupted=True)
-                print("\n✓ Checkpoint saved. Training stopped gracefully.")
+                logger.success("Checkpoint saved. Training stopped gracefully.", indent=1)
                 break
                 
             val_metrics = self.validate(val_loader, epoch)
@@ -514,18 +517,16 @@ class Trainer:
                     logger.success("New best model saved", indent=1)
 
             if self.patience_counter >= self.early_stopping_patience:
-                print(f"\n{'='*50}")
-                print(f"Early stopping at epoch {epoch}")
-                print(f"Best validation loss: {self.best_val_loss:.6f}")
-                print(f"{'='*50}")
+                logger.blank_line()
+                logger.warning(f"Early stopping at epoch {epoch}", indent=1)
+                logger.metric("Best validation loss", f"{self.best_val_loss:.6f}", indent=1)
                 break
 
         if self.writer:
             self.writer.close()
 
-        print(f"\n{'='*50}")
-        print(f"Training completed")
-        print(f"Best validation loss: {self.best_val_loss:.6f}")
-        print(f"{'='*50}\n")
+        logger.blank_line()
+        logger.success("Training completed!", indent=0)
+        logger.metric("Best validation loss", f"{self.best_val_loss:.6f}", indent=1)
 
         return self.history

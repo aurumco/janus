@@ -10,6 +10,7 @@ class TrainingLogger:
     
     def __init__(self, width: int = 80):
         self.width = width
+        self.separator_width = 80  # Fixed width for all separators
         self.last_was_progress = False
     
     def _clear_line(self):
@@ -22,15 +23,15 @@ class TrainingLogger:
     def header(self, title: str):
         """Print a main header."""
         self._clear_line()
-        print(f"\n{'═' * self.width}")
-        print(f"{title.upper().center(self.width)}")
-        print(f"{'═' * self.width}\n")
+        print(f"\n{'═' * self.separator_width}")
+        print(f"{title.upper().center(self.separator_width)}")
+        print(f"{'═' * self.separator_width}\n")
     
     def section(self, title: str):
         """Print a section header."""
         self._clear_line()
         print(f"\n{title}")
-        print(f"{'─' * len(title)}")
+        print(f"{'─' * self.separator_width}")
     
     def info(self, message: str, indent: int = 0):
         """Print an info message."""
@@ -85,7 +86,7 @@ class TrainingLogger:
     def separator(self, char: str = "─"):
         """Print a separator line."""
         self._clear_line()
-        print(char * self.width)
+        print(char * self.separator_width)
     
     def data_info(self, info: Dict[str, Any]):
         """Print dataset information in organized format."""
