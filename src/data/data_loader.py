@@ -44,6 +44,7 @@ class DataLoaderFactory:
         sequence_length: int = 96,
         smart_masking_prob: float = 0.4,
         cross_asset_masking_prob: float = 0.3,
+        use_gpu_preprocess: bool = False,
     ) -> None:
         """Initialize data loader factory.
 
@@ -77,6 +78,7 @@ class DataLoaderFactory:
         self.sequence_length = sequence_length
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
+        self.use_gpu_preprocess = use_gpu_preprocess
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -99,12 +101,33 @@ class DataLoaderFactory:
         try:
             print("- Reading parquet file...")
             mem_info("  Before read")
-            data = pd.read_parquet(self.data_path, engine="pyarrow")
-            print(f"  Loaded DataFrame: shape={data.shape}")
-            mem_info("  After read")
+            data = None
+            gdata = None
+            if self.use_gpu_preprocess:
+                try:
+                    import cudf  # type: ignore
+                    gdata = cudf.read_parquet(str(self.data_path))
+                    print(f"  Loaded cuDF GPU DataFrame: shape={tuple(gdata.shape)}")
+                except Exception as ge:
+                    print(f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU")
+            if gdata is None:
+                data = pd.read_parquet(self.data_path, engine="pyarrow")
+                print(f"  Loaded DataFrame: shape={data.shape}")
+                mem_info("  After read")
 
             print("- Processing sequences (vectorized sliding windows)...")
-            X, y = self.processing_strategy.process(data)
+            if gdata is not None and self.use_gpu_preprocess:
+                X, y = self.processing_strategy.process_gpu(gdata)
+                try:
+                    import cupy as cp  # type: ignore
+                    if isinstance(X, cp.ndarray):
+                        X = cp.asnumpy(X)
+                    if isinstance(y, cp.ndarray):
+                        y = cp.asnumpy(y)
+                except Exception:
+                    pass
+            else:
+                X, y = self.processing_strategy.process(data)
             print(f"  Sequences: X={X.shape}, y={y.shape}")
             mem_info("  After process")
 

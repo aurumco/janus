@@ -167,6 +167,9 @@ def main() -> None:
     print("="*70 + "\n")
 
     # Prepare data loader based on mode
+    use_gpu_pre = config.get('data.use_gpu_preprocess')
+    if use_gpu_pre is None:
+        use_gpu_pre = full_config.get('device.use_gpu_preprocess', True)
     if mode == 'pretrain':
         # Pre-training mode: no target column needed
         data_factory = DataLoaderFactory(
@@ -189,6 +192,7 @@ def main() -> None:
             sequence_length=config.get('data.sequence_length'),
             smart_masking_prob=config.get('data.smart_masking_prob', 0.4),
             cross_asset_masking_prob=config.get('data.cross_asset_masking_prob', 0.3),
+            use_gpu_preprocess=use_gpu_pre,
         )
     else:
         # Fine-tuning mode
@@ -208,6 +212,7 @@ def main() -> None:
             shuffle_train=config.get('data.shuffle_train'),
             random_seed=full_config.get('seed', 42),
             sequence_length=config.get('data.sequence_length'),
+            use_gpu_preprocess=use_gpu_pre,
         )
 
     print("Creating data loaders...")
