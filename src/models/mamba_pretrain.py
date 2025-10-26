@@ -107,8 +107,11 @@ class MambaPretrainModel(nn.Module):
 
         for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
             if self.training and self.use_gradient_checkpointing:
+                # Use proper function instead of lambda to avoid closure issues
+                def checkpoint_fn(x_input, layer, norm):
+                    return layer(norm(x_input))
                 x = x + torch.utils.checkpoint.checkpoint(
-                    lambda x_: mamba_layer(layer_norm(x_)), x, use_reentrant=False
+                    checkpoint_fn, x, mamba_layer, layer_norm, use_reentrant=False
                 )
             else:
                 x = x + mamba_layer(layer_norm(x))

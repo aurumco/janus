@@ -15,16 +15,6 @@ warnings.filterwarnings(
     category=FutureWarning,
     module=r"mamba_ssm\..*",
 )
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    message=r"`torch\.cuda\.amp\.(autocast|custom_fwd|custom_bwd).* is deprecated",
-)
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    message=r"`torch\.cpu\.amp\.autocast\(.*\)` is deprecated.*",
-)
 
 import torch
 import torch.nn as nn

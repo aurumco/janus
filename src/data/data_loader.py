@@ -298,14 +298,14 @@ class DataLoaderFactory:
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
             streaming_active = self.use_streaming_fallback or use_streaming_memmap
             if self.use_streaming_fallback:
-                print("  Backend: Streaming Parquet (MemoryEfficient*)")
+                print("  Backend: Streaming Parquet (MemoryEfficient*) - SLOW")
             elif use_streaming_memmap:
                 print("  Backend: Streaming Memmap (PretrainWindowDataset)")
             else:
-                print("  Backend: In-Memory Dataset")
+                print("  Backend: In-Memory Dataset (FAST)")
 
             workers = 0 if streaming_active else self.num_workers
-            pin_mem = False if streaming_active else True
+            pin_mem = True if not streaming_active else False
             
             train_loader = DataLoader(
                 train_dataset,

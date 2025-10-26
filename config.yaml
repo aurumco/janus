@@ -33,9 +33,9 @@ pretrain:
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
-    num_workers: 0
-    shuffle_train: false
-    use_streaming_fallback: true
+    num_workers: 2
+    shuffle_train: true
+    use_streaming_fallback: false
   
   model:
     name: "MambaFoundation"
