@@ -1,77 +1,130 @@
-model:
-  name: "Janus"
-  d_model: 128
-  d_state: 16
-  d_conv: 4
-  n_layers: 4
-  dropout: 0.25
-  num_classes: 1
+# Global settings
+seed: 47
 
-data:
-  input_window: 96
-  num_features: 15
-  feature_columns:
-    - "RSI_14_M15"
-    - "ATR_5_pct_M15"
-    - "dist_from_ema_10_M15"
-    - "ema10_slope_M15"
-    - "volume_oscillator_M15"
-    - "obv_M15"
-    - "hour_sin"
-    - "hour_cos"
-    - "day_of_week_sin"
-    - "day_of_week_cos"
-    - "RSI_14_H1"
-    - "ADX_14_H1"
-    - "EMA_diff_21_H4pct"
-    - "RSI_15_x_NYHours"
-    - "garch_volatility"
-  target_column: "target"
-  train_ratio: 0.75
-  val_ratio: 0.15
-  test_ratio: 0.10
-  batch_size: 160
-  num_workers: 4
-  shuffle_train: true
-
-training:
-  epochs: 150
-  learning_rate: 0.0006
-  weight_decay: 0.008
-  optimizer: "adamw"
-  scheduler: "reduce_on_plateau"
-  scheduler_patience: 10
-  scheduler_factor: 0.7
-  scheduler_min_lr: 0.00001
-  warmup_epochs: 0
-  gradient_clip: 1.5
-  early_stopping_patience: 15
-  early_stopping_min_delta: 0.000001
-  save_best_only: true
+# Pre-training configuration for SSL on 1min multi-asset data
+pretrain:
+  data:
+    path: "outputs/datasets/pre-train/parquet/janus_pretrain_1min_dataset.parquet"
+    sequence_length: 256
+    batch_size: 256
+    num_features: 16
+    masking_ratio: 0.15
+    volatility_lookahead: 60
+    train_ratio: 0.85
+    val_ratio: 0.15
+    test_ratio: 0.0
+    num_workers: 4
+    shuffle_train: true
   
-loss:
-  type: "confidence_weighted"
-  wrong_sign_penalty: 3.0
-  magnitude_weight: 0.4
+  model:
+    name: "MambaFoundation"
+    d_model: 256
+    d_state: 16
+    d_conv: 4
+    n_layers: 8
+    dropout: 0.1
+    num_assets: 15
+    asset_embedding_dim: 16
+    reconstruction_head_dim: 16
+    volatility_head_dim: 1
+  
+  training:
+    epochs: 100
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    optimizer: "adamw"
+    scheduler: "cosine"
+    warmup_epochs: 5
+    gradient_clip: 1.0
+    early_stopping_patience: 20
+    early_stopping_min_delta: 0.00001
+    save_best_only: true
+  
+  loss:
+    masked_price_weight: 1.0
+    volatility_weight: 0.5
 
+# Fine-tuning configuration for regression on 30min data
+finetune:
+  data:
+    path: "outputs/datasets/fine-tune/parquet/janus_finetune_30min_dataset.parquet"
+    sequence_length: 96
+    batch_size: 128
+    num_features: 16
+    feature_columns:
+      - "RSI_14_M15"
+      - "ATR_5_pct_M15"
+      - "dist_from_ema_10_M15"
+      - "ema10_slope_M15"
+      - "volume_oscillator_M15"
+      - "obv_M15"
+      - "hour_sin"
+      - "hour_cos"
+      - "day_of_week_sin"
+      - "day_of_week_cos"
+      - "RSI_14_H1"
+      - "ADX_14_H1"
+      - "EMA_diff_21_H4pct"
+      - "RSI_15_x_NYHours"
+      - "garch_volatility"
+      - "asset_id"
+    target_column: "target"
+    train_ratio: 0.75
+    val_ratio: 0.15
+    test_ratio: 0.10
+    num_workers: 4
+    shuffle_train: true
+  
+  model:
+    name: "MambaFineTuned"
+    d_model: 128
+    d_state: 16
+    d_conv: 4
+    n_layers: 4
+    dropout: 0.25
+    output_dim: 1
+  
+  training:
+    epochs: 50
+    learning_rate: 0.00005
+    weight_decay: 0.008
+    optimizer: "adamw"
+    scheduler: "reduce_on_plateau"
+    scheduler_patience: 10
+    scheduler_factor: 0.7
+    scheduler_min_lr: 0.00001
+    warmup_epochs: 0
+    gradient_clip: 1.5
+    early_stopping_patience: 15
+    early_stopping_min_delta: 0.000001
+    save_best_only: true
+  
+  loss:
+    type: "confidence_weighted"
+    wrong_sign_penalty: 3.0
+    magnitude_weight: 0.4
+
+# Shared paths
 paths:
-  data_path: "/kaggle/input/janus-m15-dataset/janus_m15_dataset.parquet"
   output_dir: "/kaggle/working"
   checkpoint_dir: "checkpoints"
   results_dir: "results"
   logs_dir: "logs"
 
+# Device configuration
 device:
   use_cuda: true
   device_id: 0
   mixed_precision: true
 
+# Logging configuration
 logging:
   log_interval: 10
   save_interval: 1
   tensorboard: true
   wandb: false
 
+# Evaluation configuration
 evaluation:
   metrics:
     - "mae"
@@ -82,5 +135,3 @@ evaluation:
   plot_predictions: true
   plot_residuals: true
   plot_training_curves: true
-
-seed: 47

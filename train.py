@@ -22,6 +22,7 @@ from src.data.sequence_strategy import SequenceProcessingStrategy
 from src.evaluation.evaluator import ModelEvaluator
 from src.evaluation.visualizer import MetricsVisualizer
 from src.models.mamba_regressor import MambaRegressor
+from src.models.mamba_pretrain import MambaPretrainModel
 from src.training.trainer import Trainer
 from src.training.losses import (
     DirectionalMSELoss,
@@ -30,6 +31,7 @@ from src.training.losses import (
     ConfidenceWeightedLoss,
     AdaptiveSignLoss,
 )
+from src.training.pretrain_losses import PretrainLoss
 from src.utils.helpers import get_device, save_model_architecture, set_seed
 
 
@@ -40,13 +42,20 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description='Train Mamba regressor for Bitcoin price prediction'
+        description='Train Mamba regressor for cryptocurrency price prediction'
     )
     parser.add_argument(
         '--config',
         type=str,
         default='config.yaml',
         help='Path to configuration file'
+    )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['pretrain', 'finetune'],
+        required=True,
+        help='Training mode: pretrain or finetune'
     )
     parser.add_argument(
         '--data-path',
@@ -59,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help='Override output directory from config'
+    )
+    parser.add_argument(
+        '--load-checkpoint',
+        type=str,
+        default=None,
+        help='Path to pretrained checkpoint for fine-tuning'
     )
     parser.add_argument(
         '--resume',
@@ -74,9 +89,10 @@ def main() -> None:
     """Main training function."""
     args = parse_args()
 
-    config = ConfigLoader(args.config)
+    # Load full config
+    full_config = ConfigLoader(args.config)
 
-    set_seed(config.get('seed', 42))
+    set_seed(full_config.get('seed', 42))
 
     warnings.filterwarnings(
         "ignore",
@@ -90,8 +106,8 @@ def main() -> None:
     )
 
     device = get_device(
-        use_cuda=config.get('device.use_cuda', True),
-        device_id=config.get('device.device_id', 0)
+        use_cuda=full_config.get('device.use_cuda', True),
+        device_id=full_config.get('device.device_id', 0)
     )
     if device.type == 'cuda':
         try:
@@ -100,41 +116,91 @@ def main() -> None:
         except Exception:
             pass
 
-    data_path = args.data_path or config.get('paths.data_path')
-    output_dir = Path(args.output_dir or config.get('paths.output_dir'))
+    # Get mode-specific config section
+    mode = args.mode
+    config_prefix = mode
+    
+    # Create a view into the mode-specific config
+    class ModeConfig:
+        def __init__(self, full_cfg, prefix):
+            self.full_cfg = full_cfg
+            self.prefix = prefix
+        
+        def get(self, key, default=None):
+            # Try mode-specific first, then fall back to global
+            mode_key = f"{self.prefix}.{key}"
+            if self.full_cfg.config.get(self.prefix) and key in str(self.full_cfg.config.get(self.prefix, {})):
+                return self.full_cfg.get(mode_key, default)
+            # Fall back to global config
+            return self.full_cfg.get(key, default)
+    
+    config = ModeConfig(full_config, config_prefix)
+
+    data_path = args.data_path or config.get('data.path')
+    output_dir = Path(args.output_dir or full_config.get('paths.output_dir'))
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    results_dir = output_dir / config.get('paths.results_dir', 'results') / timestamp
-    checkpoint_dir = output_dir / config.get('paths.checkpoint_dir', 'checkpoints')
-    log_dir = output_dir / config.get('paths.logs_dir', 'logs') / timestamp
+    mode_suffix = f"{mode}_{timestamp}"
+    results_dir = output_dir / full_config.get('paths.results_dir', 'results') / mode_suffix
+    checkpoint_dir = output_dir / full_config.get('paths.checkpoint_dir', 'checkpoints') / mode
+    log_dir = output_dir / full_config.get('paths.logs_dir', 'logs') / mode_suffix
 
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "="*70)
-    print("MAMBA BITCOIN PRICE REGRESSOR - TRAINING")
+    print(f"MAMBA CRYPTOCURRENCY FORECASTING - {mode.upper()} MODE")
     print("="*70)
     print(f"Configuration: {args.config}")
+    print(f"Mode: {mode}")
     print(f"Data path: {data_path}")
     print(f"Output directory: {output_dir}")
     print(f"Results directory: {results_dir}")
+    if args.load_checkpoint:
+        print(f"Loading pretrained weights: {args.load_checkpoint}")
     print("="*70 + "\n")
 
-    data_factory = DataLoaderFactory(
-        data_path=data_path,
-        processing_strategy=SequenceProcessingStrategy(
-            feature_columns=config.get('data.feature_columns'),
-            target_column=config.get('data.target_column'),
-            sequence_length=config.get('data.input_window'),
-        ),
-        train_ratio=config.get('data.train_ratio'),
-        val_ratio=config.get('data.val_ratio'),
-        test_ratio=config.get('data.test_ratio'),
-        batch_size=config.get('data.batch_size'),
-        num_workers=config.get('data.num_workers'),
-        shuffle_train=config.get('data.shuffle_train'),
-        random_seed=config.get('seed', 42),
-    )
+    # Prepare data loader based on mode
+    if mode == 'pretrain':
+        # Pre-training mode: no target column needed
+        data_factory = DataLoaderFactory(
+            data_path=data_path,
+            processing_strategy=SequenceProcessingStrategy(
+                feature_columns=None,  # Will use all features
+                target_column=None,
+                sequence_length=config.get('data.sequence_length'),
+            ),
+            mode='pretrain',
+            train_ratio=config.get('data.train_ratio'),
+            val_ratio=config.get('data.val_ratio'),
+            test_ratio=config.get('data.test_ratio', 0.0),
+            batch_size=config.get('data.batch_size'),
+            num_workers=config.get('data.num_workers'),
+            shuffle_train=config.get('data.shuffle_train'),
+            random_seed=full_config.get('seed', 42),
+            masking_ratio=config.get('data.masking_ratio', 0.15),
+            volatility_lookahead=config.get('data.volatility_lookahead', 60),
+            sequence_length=config.get('data.sequence_length'),
+        )
+    else:
+        # Fine-tuning mode
+        data_factory = DataLoaderFactory(
+            data_path=data_path,
+            processing_strategy=SequenceProcessingStrategy(
+                feature_columns=config.get('data.feature_columns'),
+                target_column=config.get('data.target_column'),
+                sequence_length=config.get('data.sequence_length'),
+            ),
+            mode='finetune',
+            train_ratio=config.get('data.train_ratio'),
+            val_ratio=config.get('data.val_ratio'),
+            test_ratio=config.get('data.test_ratio'),
+            batch_size=config.get('data.batch_size'),
+            num_workers=config.get('data.num_workers'),
+            shuffle_train=config.get('data.shuffle_train'),
+            random_seed=full_config.get('seed', 42),
+            sequence_length=config.get('data.sequence_length'),
+        )
 
     print("Creating data loaders...")
     data_loaders = data_factory.create_data_loaders()
@@ -151,15 +217,31 @@ def main() -> None:
     print(f"Val batches: {len(data_loaders['val'])}")
     print(f"Test batches: {len(data_loaders['test'])}\n")
 
-    model = MambaRegressor(
-        input_dim=config.get('data.num_features'),
-        d_model=config.get('model.d_model'),
-        d_state=config.get('model.d_state'),
-        d_conv=config.get('model.d_conv'),
-        n_layers=config.get('model.n_layers'),
-        output_dim=config.get('model.num_classes', 1),
-        dropout=config.get('model.dropout'),
-    )
+    # Create model based on mode
+    if mode == 'pretrain':
+        model = MambaPretrainModel(
+            input_dim=config.get('data.num_features'),
+            d_model=config.get('model.d_model'),
+            d_state=config.get('model.d_state'),
+            d_conv=config.get('model.d_conv'),
+            n_layers=config.get('model.n_layers'),
+            reconstruction_head_dim=config.get('model.reconstruction_head_dim'),
+            volatility_head_dim=config.get('model.volatility_head_dim', 1),
+            dropout=config.get('model.dropout'),
+            num_assets=config.get('model.num_assets', 15),
+            asset_embedding_dim=config.get('model.asset_embedding_dim', 16),
+        )
+    else:
+        model = MambaRegressor(
+            input_dim=config.get('data.num_features'),
+            d_model=config.get('model.d_model'),
+            d_state=config.get('model.d_state'),
+            d_conv=config.get('model.d_conv'),
+            n_layers=config.get('model.n_layers'),
+            output_dim=config.get('model.output_dim', 1),
+            dropout=config.get('model.dropout'),
+            pretrained_checkpoint_path=args.load_checkpoint,
+        )
     
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
@@ -173,49 +255,57 @@ def main() -> None:
 
     save_model_architecture(model, results_dir / 'model_architecture.txt')
 
-    loss_type = config.get('loss.type', 'huber').lower()
-    if loss_type == 'mse':
-        criterion = nn.MSELoss()
-        print("Using MSE Loss for regression")
-    elif loss_type == 'mae':
-        criterion = nn.L1Loss()
-        print("Using MAE Loss for regression")
-    elif loss_type == 'confidence_weighted':
-        wrong_sign_penalty = config.get('loss.wrong_sign_penalty', 3.0)
-        magnitude_weight = config.get('loss.magnitude_weight', 0.3)
-        criterion = ConfidenceWeightedLoss(
-            wrong_sign_penalty=wrong_sign_penalty,
-            magnitude_weight=magnitude_weight,
+    # Create loss function based on mode
+    if mode == 'pretrain':
+        criterion = PretrainLoss(
+            masked_price_weight=config.get('loss.masked_price_weight', 1.0),
+            volatility_weight=config.get('loss.volatility_weight', 0.5),
         )
-        print(f"Using Confidence-Weighted Loss (sign_penalty={wrong_sign_penalty}, mag_w={magnitude_weight})")
-    elif loss_type == 'adaptive_sign':
-        base_penalty = config.get('loss.base_penalty', 2.5)
-        magnitude_threshold = config.get('loss.magnitude_threshold', 0.005)
-        criterion = AdaptiveSignLoss(
-            base_penalty=base_penalty,
-            magnitude_threshold=magnitude_threshold,
-        )
-        print(f"Using Adaptive Sign Loss (base_penalty={base_penalty}, threshold={magnitude_threshold})")
-    elif loss_type == 'directional_mse':
-        direction_weight = config.get('loss.direction_weight', 2.0)
-        variance_weight = config.get('loss.variance_weight', 0.5)
-        criterion = DirectionalMSELoss(
-            direction_weight=direction_weight,
-            variance_weight=variance_weight,
-        )
-        print(f"Using Directional MSE Loss (dir_w={direction_weight}, var_w={variance_weight})")
-    elif loss_type == 'sign_weighted_mse':
-        sign_penalty = config.get('loss.sign_penalty_multiplier', 5.0)
-        criterion = SignWeightedMSELoss(sign_penalty_multiplier=sign_penalty)
-        print(f"Using Sign-Weighted MSE Loss (penalty={sign_penalty}x for wrong sign)")
-    elif loss_type == 'asymmetric_mse':
-        penalty = config.get('loss.underestimate_penalty', 1.5)
-        criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
-        print(f"Using Asymmetric MSE Loss (penalty={penalty})")
+        print(f"Using Pre-training Loss (masked_price_w={config.get('loss.masked_price_weight', 1.0)}, vol_w={config.get('loss.volatility_weight', 0.5)})")
     else:
-        huber_delta = config.get('loss.huber_delta', 0.5)
-        criterion = nn.HuberLoss(delta=huber_delta)
-        print(f"Using Huber Loss (delta={huber_delta}) for regression")
+        loss_type = config.get('loss.type', 'huber').lower()
+        if loss_type == 'mse':
+            criterion = nn.MSELoss()
+            print("Using MSE Loss for regression")
+        elif loss_type == 'mae':
+            criterion = nn.L1Loss()
+            print("Using MAE Loss for regression")
+        elif loss_type == 'confidence_weighted':
+            wrong_sign_penalty = config.get('loss.wrong_sign_penalty', 3.0)
+            magnitude_weight = config.get('loss.magnitude_weight', 0.3)
+            criterion = ConfidenceWeightedLoss(
+                wrong_sign_penalty=wrong_sign_penalty,
+                magnitude_weight=magnitude_weight,
+            )
+            print(f"Using Confidence-Weighted Loss (sign_penalty={wrong_sign_penalty}, mag_w={magnitude_weight})")
+        elif loss_type == 'adaptive_sign':
+            base_penalty = config.get('loss.base_penalty', 2.5)
+            magnitude_threshold = config.get('loss.magnitude_threshold', 0.005)
+            criterion = AdaptiveSignLoss(
+                base_penalty=base_penalty,
+                magnitude_threshold=magnitude_threshold,
+            )
+            print(f"Using Adaptive Sign Loss (base_penalty={base_penalty}, threshold={magnitude_threshold})")
+        elif loss_type == 'directional_mse':
+            direction_weight = config.get('loss.direction_weight', 2.0)
+            variance_weight = config.get('loss.variance_weight', 0.5)
+            criterion = DirectionalMSELoss(
+                direction_weight=direction_weight,
+                variance_weight=variance_weight,
+            )
+            print(f"Using Directional MSE Loss (dir_w={direction_weight}, var_w={variance_weight})")
+        elif loss_type == 'sign_weighted_mse':
+            sign_penalty = config.get('loss.sign_penalty_multiplier', 5.0)
+            criterion = SignWeightedMSELoss(sign_penalty_multiplier=sign_penalty)
+            print(f"Using Sign-Weighted MSE Loss (penalty={sign_penalty}x for wrong sign)")
+        elif loss_type == 'asymmetric_mse':
+            penalty = config.get('loss.underestimate_penalty', 1.5)
+            criterion = AsymmetricMSELoss(underestimate_penalty=penalty)
+            print(f"Using Asymmetric MSE Loss (penalty={penalty})")
+        else:
+            huber_delta = config.get('loss.huber_delta', 0.5)
+            criterion = nn.HuberLoss(delta=huber_delta)
+            print(f"Using Huber Loss (delta={huber_delta}) for regression")
 
     optimizer = AdamW(
         model.parameters(),
@@ -277,30 +367,34 @@ def main() -> None:
     if best_checkpoint.exists():
         trainer.load_checkpoint(str(best_checkpoint))
 
-    evaluator = ModelEvaluator(
-        model=model,
-        device=device,
-    )
-
-    print("\nEvaluating on test set...")
-    test_metrics = evaluator.evaluate(test_loader)
-
-    evaluator.print_metrics(test_metrics)
-    evaluator.save_metrics(test_metrics, results_dir / 'evaluation_metrics.txt')
-
-    print("Creating visualizations...")
-    if config.get('evaluation.plot_predictions', True):
-        visualizer.plot_predictions(
-            test_metrics['y_true'],
-            test_metrics['y_pred'],
-            results_dir / 'predictions.png'
+    # Only run detailed evaluation for fine-tuning mode
+    if mode == 'finetune':
+        evaluator = ModelEvaluator(
+            model=model,
+            device=device,
         )
-    
-    if config.get('evaluation.plot_residuals', True):
-        visualizer.plot_residuals(
-            test_metrics['residuals'],
-            results_dir / 'residuals.png'
-        )
+
+        print("\nEvaluating on test set...")
+        test_metrics = evaluator.evaluate(test_loader)
+
+        evaluator.print_metrics(test_metrics)
+        evaluator.save_metrics(test_metrics, results_dir / 'evaluation_metrics.txt')
+
+        print("Creating visualizations...")
+        if full_config.get('evaluation.plot_predictions', True):
+            visualizer.plot_predictions(
+                test_metrics['y_true'],
+                test_metrics['y_pred'],
+                results_dir / 'predictions.png'
+            )
+        
+        if full_config.get('evaluation.plot_residuals', True):
+            visualizer.plot_residuals(
+                test_metrics['residuals'],
+                results_dir / 'residuals.png'
+            )
+    else:
+        print("\nPre-training mode: Skipping detailed evaluation (SSL tasks)")
 
     export_dir = results_dir / 'exports'
     export_dir.mkdir(parents=True, exist_ok=True)

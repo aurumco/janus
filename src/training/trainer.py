@@ -104,9 +104,23 @@ class Trainer:
         """
         self.model.train()
         total_loss = 0.0
+        loss_components = {}
 
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
+        for batch_idx, batch_data in enumerate(train_loader):
+            # Handle both tuple (inputs, targets) and dict formats
+            if isinstance(batch_data, dict):
+                inputs = batch_data["input_sequence"]
+                batch = batch_data
+            else:
+                inputs, targets = batch_data
+                batch = {"targets": targets}
+            # Move data to device
+            if isinstance(batch, dict):
+                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
+            else:
+                inputs = inputs.to(self.device)
+                batch["targets"] = batch["targets"].to(self.device)
 
             self.optimizer.zero_grad()
 
@@ -117,7 +131,16 @@ class Trainer:
                     ctx = amp_autocast()
                 with ctx:
                     outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets)
+                    loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
+                    
+                    # Handle dictionary loss output
+                    if isinstance(loss_output, dict):
+                        loss = loss_output["total_loss"]
+                        for key, val in loss_output.items():
+                            if key != "total_loss":
+                                loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                    else:
+                        loss = loss_output
                 
                 self.scaler.scale(loss).backward()
                 
@@ -132,7 +155,16 @@ class Trainer:
                 self.scaler.update()
             else:
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+                loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
+                
+                # Handle dictionary loss output
+                if isinstance(loss_output, dict):
+                    loss = loss_output["total_loss"]
+                    for key, val in loss_output.items():
+                        if key != "total_loss":
+                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                else:
+                    loss = loss_output
                 
                 loss.backward()
                 
@@ -147,8 +179,13 @@ class Trainer:
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
+        metrics = {'loss': avg_loss}
+        
+        # Add averaged loss components
+        for key, val in loss_components.items():
+            metrics[key] = val / len(train_loader)
 
-        return {'loss': avg_loss}
+        return metrics
 
     def validate(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Validate the model.
@@ -162,19 +199,48 @@ class Trainer:
         """
         self.model.eval()
         total_loss = 0.0
+        loss_components = {}
 
         with torch.no_grad():
-            for batch_idx, (inputs, targets) in enumerate(val_loader):
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+            for batch_idx, batch_data in enumerate(val_loader):
+                # Handle both tuple and dict formats
+                if isinstance(batch_data, dict):
+                    inputs = batch_data["input_sequence"]
+                    batch = batch_data
+                else:
+                    inputs, targets = batch_data
+                    batch = {"targets": targets}
+
+                # Move data to device
+                if isinstance(batch, dict):
+                    batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
+                else:
+                    inputs = inputs.to(self.device)
+                    batch["targets"] = batch["targets"].to(self.device)
 
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+                loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
+                
+                # Handle dictionary loss output
+                if isinstance(loss_output, dict):
+                    loss = loss_output["total_loss"]
+                    for key, val in loss_output.items():
+                        if key != "total_loss":
+                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                else:
+                    loss = loss_output
 
                 total_loss += loss.item()
 
         avg_loss = total_loss / len(val_loader)
+        metrics = {'loss': avg_loss}
+        
+        # Add averaged loss components
+        for key, val in loss_components.items():
+            metrics[key] = val / len(val_loader)
 
-        return {'loss': avg_loss}
+        return metrics
 
     def fit(
         self,
@@ -232,6 +298,14 @@ class Trainer:
                 self.writer.add_scalar('Loss/train', train_metrics['loss'], epoch)
                 self.writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
                 self.writer.add_scalar('Learning_Rate', current_lr, epoch)
+                
+                # Log additional loss components if present
+                for key in train_metrics:
+                    if key not in ['loss']:
+                        self.writer.add_scalar(f'Loss/train_{key}', train_metrics[key], epoch)
+                for key in val_metrics:
+                    if key not in ['loss']:
+                        self.writer.add_scalar(f'Loss/val_{key}', val_metrics[key], epoch)
 
             epoch_time = time.time() - epoch_start_time
             

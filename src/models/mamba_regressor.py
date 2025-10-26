@@ -1,6 +1,7 @@
 """Mamba-based regressor for Bitcoin price change prediction."""
 
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,7 @@ class MambaRegressor(nn.Module):
         n_layers: int,
         output_dim: int = 1,
         dropout: float = 0.1,
+        pretrained_checkpoint_path: Optional[str] = None,
     ) -> None:
         """Initialize Mamba regressor.
 
@@ -31,6 +33,7 @@ class MambaRegressor(nn.Module):
             n_layers: Number of Mamba blocks.
             output_dim: Output dimension (1 for single value regression).
             dropout: Dropout probability.
+            pretrained_checkpoint_path: Path to pretrained model checkpoint.
         """
         super().__init__()
 
@@ -62,6 +65,9 @@ class MambaRegressor(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, output_dim),
         )
+
+        if pretrained_checkpoint_path:
+            self._load_pretrained_weights(pretrained_checkpoint_path)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the regressor.
@@ -100,3 +106,50 @@ class MambaRegressor(nn.Module):
             "total": total_params,
             "trainable": trainable_params,
         }
+
+    def _load_pretrained_weights(self, checkpoint_path: str) -> None:
+        """Load pretrained weights from pre-training checkpoint.
+
+        Args:
+            checkpoint_path: Path to pretrained model checkpoint.
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            print(f"Warning: Pretrained checkpoint not found: {checkpoint_path}")
+            return
+
+        print(f"Loading pretrained weights from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        if "model_state_dict" in checkpoint:
+            pretrained_state = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            pretrained_state = checkpoint["state_dict"]
+        else:
+            pretrained_state = checkpoint
+
+        if hasattr(pretrained_state, "module"):
+            pretrained_state = pretrained_state.module.state_dict()
+
+        backbone_keys = [
+            "input_projection",
+            "input_norm",
+            "mamba_layers",
+            "layer_norms",
+        ]
+
+        model_dict = self.state_dict()
+        pretrained_dict = {}
+
+        for key, value in pretrained_state.items():
+            if any(bk in key for bk in backbone_keys):
+                if key in model_dict and model_dict[key].shape == value.shape:
+                    pretrained_dict[key] = value
+                    print(f"  ✓ Loaded: {key}")
+                else:
+                    print(f"  ✗ Skipped: {key} (shape mismatch or not found)")
+
+        model_dict.update(pretrained_dict)
+        self.load_state_dict(model_dict, strict=False)
+
+        print(f"Successfully loaded {len(pretrained_dict)} pretrained layers")

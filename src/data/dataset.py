@@ -1,44 +1,9 @@
-"""PyTorch dataset implementation for Bitcoin trend prediction."""
+"""PyTorch dataset implementation for Bitcoin trend prediction.
 
-from typing import Tuple
+This module maintains backward compatibility while delegating to FineTuneDataset.
+"""
 
-import numpy as np
-import torch
-from torch.utils.data import Dataset
+from .finetune_dataset import FineTuneDataset
 
-
-class BitcoinTrendDataset(Dataset):
-    """PyTorch dataset for Bitcoin trend sequences."""
-
-    def __init__(self, X: np.ndarray, y: np.ndarray) -> None:
-        """Initialize dataset.
-
-        Args:
-            X: Feature sequences of shape (n_samples, seq_len, n_features).
-            y: Target values of shape (n_samples,) for regression.
-        """
-        self.X = torch.FloatTensor(X)
-        self.y = torch.FloatTensor(y)
-        
-        # Ensure y has shape (n_samples, 1) for regression
-        if self.y.ndim == 1:
-            self.y = self.y.unsqueeze(1)
-
-    def __len__(self) -> int:
-        """Get dataset length.
-
-        Returns:
-            Number of samples in the dataset.
-        """
-        return len(self.X)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get a single sample.
-
-        Args:
-            idx: Sample index.
-
-        Returns:
-            Tuple of (features, label).
-        """
-        return self.X[idx], self.y[idx]
+# Backward compatibility alias
+BitcoinTrendDataset = FineTuneDataset

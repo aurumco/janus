@@ -1,13 +1,14 @@
 """Data loading and preparation utilities."""
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
 from torch.utils.data import DataLoader
 
 from .base_strategy import DataProcessingStrategy
-from .dataset import BitcoinTrendDataset
+from .finetune_dataset import FineTuneDataset
+from .pretrain_dataset import PretrainDataset
 
 
 class DataLoaderFactory:
@@ -17,6 +18,7 @@ class DataLoaderFactory:
         self,
         data_path: str,
         processing_strategy: DataProcessingStrategy,
+        mode: str = "finetune",
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         test_ratio: float = 0.1,
@@ -24,12 +26,16 @@ class DataLoaderFactory:
         num_workers: int = 4,
         shuffle_train: bool = True,
         random_seed: int = 42,
+        masking_ratio: float = 0.15,
+        volatility_lookahead: int = 60,
+        sequence_length: int = 96,
     ) -> None:
         """Initialize data loader factory.
 
         Args:
             data_path: Path to the parquet data file.
             processing_strategy: Strategy for processing data.
+            mode: Training mode ('pretrain' or 'finetune').
             train_ratio: Proportion of data for training.
             val_ratio: Proportion of data for validation.
             test_ratio: Proportion of data for testing.
@@ -37,9 +43,13 @@ class DataLoaderFactory:
             num_workers: Number of worker processes.
             shuffle_train: Whether to shuffle training data.
             random_seed: Random seed for reproducibility.
+            masking_ratio: Masking ratio for pre-training.
+            volatility_lookahead: Lookahead for volatility prediction.
+            sequence_length: Length of input sequences.
         """
         self.data_path = Path(data_path)
         self.processing_strategy = processing_strategy
+        self.mode = mode
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
@@ -47,6 +57,9 @@ class DataLoaderFactory:
         self.num_workers = num_workers
         self.shuffle_train = shuffle_train
         self.random_seed = random_seed
+        self.masking_ratio = masking_ratio
+        self.volatility_lookahead = volatility_lookahead
+        self.sequence_length = sequence_length
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -77,9 +90,29 @@ class DataLoaderFactory:
         X_test = X[val_end:]
         y_test = y[val_end:]
 
-        train_dataset = BitcoinTrendDataset(X_train, y_train)
-        val_dataset = BitcoinTrendDataset(X_val, y_val)
-        test_dataset = BitcoinTrendDataset(X_test, y_test)
+        if self.mode == "pretrain":
+            train_dataset = PretrainDataset(
+                X_train,
+                sequence_length=self.sequence_length,
+                masking_ratio=self.masking_ratio,
+                volatility_lookahead=self.volatility_lookahead,
+            )
+            val_dataset = PretrainDataset(
+                X_val,
+                sequence_length=self.sequence_length,
+                masking_ratio=self.masking_ratio,
+                volatility_lookahead=self.volatility_lookahead,
+            )
+            test_dataset = PretrainDataset(
+                X_test,
+                sequence_length=self.sequence_length,
+                masking_ratio=self.masking_ratio,
+                volatility_lookahead=self.volatility_lookahead,
+            )
+        else:
+            train_dataset = FineTuneDataset(X_train, y_train)
+            val_dataset = FineTuneDataset(X_val, y_val)
+            test_dataset = FineTuneDataset(X_test, y_test)
 
         train_loader = DataLoader(
             train_dataset,
