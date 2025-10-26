@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "janus"
+version = "2.0.0"
+description = "Multi-Asset Cryptocurrency Forecasting with Mamba-SSM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Janus Team"}
+]
+keywords = ["deep-learning", "time-series", "mamba", "cryptocurrency", "forecasting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "numpy>=1.26.4",
+    "pandas>=2.2.3",
+    "scikit-learn>=1.5.2",
+    "matplotlib>=3.9.2",
+    "seaborn>=0.13.2",
+    "joblib>=1.4.2",
+    "tqdm>=4.67.1",
+    "tensorboard>=2.17.0",
+    "pyarrow>=17.0.0",
+    "mamba-ssm==2.2.6.post3",
+    "causal-conv1d==1.4.0",
+    "torch==2.4.0",
+    "pandas-ta-classic>=0.3.36",
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0.0",
+    "pytest>=7.4.0",
+    "mypy>=1.7.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"

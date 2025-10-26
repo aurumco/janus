@@ -50,23 +50,26 @@ class PretrainLoss(nn.Module):
         reconstructed_sequence = model_outputs["reconstructed_sequence"]
         predicted_volatility = model_outputs["predicted_volatility"]
 
-        mask_indices = batch["mask_indices"]
-        original_masked_values = batch["original_masked_values"]
+        mask_binary = batch["mask_binary"]
+        original_sequence = batch["original_sequence"]
         volatility_target = batch["volatility_target"]
 
         batch_size = reconstructed_sequence.size(0)
 
         masked_price_loss = 0.0
+        total_masked = 0
+        
         for i in range(batch_size):
-            indices = mask_indices[i]
-            if len(indices) > 0:
-                pred_masked = reconstructed_sequence[i, indices]
-                true_masked = original_masked_values[i]
+            mask_i = mask_binary[i]
+            if mask_i.sum() > 0:
+                pred_masked = reconstructed_sequence[i, mask_i]
+                true_masked = original_sequence[i, mask_i]
                 masked_price_loss += self.reconstruction_loss_fn(
                     pred_masked, true_masked
                 )
+                total_masked += 1
 
-        masked_price_loss = masked_price_loss / batch_size
+        masked_price_loss = masked_price_loss / max(total_masked, 1)
 
         volatility_loss = self.volatility_loss_fn(
             predicted_volatility, volatility_target

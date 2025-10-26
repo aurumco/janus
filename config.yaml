@@ -1,6 +1,24 @@
 # Global settings
 seed: 47
 
+# Multi-asset configuration
+assets:
+  - "BTCUSDT"
+  - "ETHUSDT"
+  - "BNBUSDT"
+  - "XRPUSDT"
+  - "ADAUSDT"
+  - "DOGEUSDT"
+  - "SOLUSDT"
+  - "DOTUSDT"
+  - "MATICUSDT"
+  - "LTCUSDT"
+  - "AVAXUSDT"
+  - "LINKUSDT"
+  - "UNIUSDT"
+  - "ATOMUSDT"
+  - "ETCUSDT"
+
 # Pre-training configuration for SSL on 1min multi-asset data
 pretrain:
   data:
@@ -24,18 +42,20 @@ pretrain:
     n_layers: 8
     dropout: 0.1
     num_assets: 15
-    asset_embedding_dim: 16
+    asset_embedding_dim: 32
     reconstruction_head_dim: 16
     volatility_head_dim: 1
+    use_gradient_checkpointing: true
   
   training:
     epochs: 100
-    learning_rate: 0.0001
+    learning_rate: 0.00005
     weight_decay: 0.01
     optimizer: "adamw"
     scheduler: "cosine"
-    warmup_epochs: 5
-    gradient_clip: 1.0
+    warmup_epochs: 10
+    gradient_clip: 0.5
+    accumulation_steps: 4
     early_stopping_patience: 20
     early_stopping_min_delta: 0.00001
     save_best_only: true
@@ -95,6 +115,8 @@ finetune:
     scheduler_min_lr: 0.00001
     warmup_epochs: 0
     gradient_clip: 1.5
+    accumulation_steps: 2
+    freeze_backbone_epochs: 3
     early_stopping_patience: 15
     early_stopping_min_delta: 0.000001
     save_best_only: true

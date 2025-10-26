@@ -5,6 +5,7 @@ import torch.nn as nn
 
 
 class ConfidenceWeightedLoss(nn.Module):
+    EPSILON = 1e-8
     """Loss that rewards bold correct predictions and penalizes timidity.
     
     Key features:
@@ -204,6 +205,7 @@ class DirectionalMSELoss(nn.Module):
         # This prevents mode collapse to constant predictions
         pred_var = torch.var(predictions)
         target_var = torch.var(targets)
+        magnitude_error = torch.abs(predictions - targets) / (torch.abs(targets) + self.epsilon)
         # Penalize when pred_var is much smaller than target_var
         variance_penalty = torch.clamp(target_var - pred_var, min=0.0)
         
@@ -298,6 +300,7 @@ class QuantileLoss(nn.Module):
 
 
 class SignWeightedMSELoss(nn.Module):
+    EPSILON = 1e-8
     """MSE Loss that heavily weights sign accuracy.
     
     Uses multiplicative penalty for wrong sign predictions,
@@ -333,8 +336,8 @@ class SignWeightedMSELoss(nn.Module):
         squared_errors = (predictions - targets) ** 2
         
         # Check sign agreement
-        pred_signs = torch.sign(predictions)
-        target_signs = torch.sign(targets)
+        pred_signs = torch.sign(predictions + self.epsilon)
+        target_signs = torch.sign(targets + self.epsilon)
         correct_sign = (pred_signs == target_signs).float()
         
         # Weight errors based on sign correctness

@@ -35,6 +35,7 @@ class Trainer:
         early_stopping_min_delta: float = 0.0001,
         use_amp: bool = False,
         warmup_epochs: int = 0,
+        accumulation_steps: int = 1,
     ) -> None:
         """Initialize trainer.
 
@@ -60,6 +61,7 @@ class Trainer:
         self.warmup_epochs = warmup_epochs
         self.initial_lr = optimizer.param_groups[0]['lr']
         self.use_amp = use_amp
+        self.accumulation_steps = max(1, accumulation_steps)
         if self.use_amp:
             try:
                 self.scaler = AmpGradScaler(device_type="cuda")  # type: ignore[arg-type]
@@ -92,6 +94,29 @@ class Trainer:
             'learning_rate': [],
         }
 
+    def freeze_backbone(self, freeze: bool = True) -> None:
+        """Freeze or unfreeze backbone layers for fine-tuning.
+
+        Args:
+            freeze: If True, freeze backbone. If False, unfreeze all.
+        """
+        backbone_keywords = [
+            'input_projection',
+            'input_norm',
+            'mamba_layers',
+            'layer_norms',
+        ]
+
+        for name, param in self.model.named_parameters():
+            if any(keyword in name for keyword in backbone_keywords):
+                param.requires_grad = not freeze
+            else:
+                param.requires_grad = True
+
+        status = "frozen" if freeze else "unfrozen"
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Backbone {status}. Trainable parameters: {trainable:,}")
+
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train for one epoch.
 
@@ -122,8 +147,6 @@ class Trainer:
                 inputs = inputs.to(self.device)
                 batch["targets"] = batch["targets"].to(self.device)
 
-            self.optimizer.zero_grad()
-
             if self.use_amp:
                 try:
                     ctx = amp_autocast(device_type="cuda")
@@ -133,7 +156,6 @@ class Trainer:
                     outputs = self.model(inputs)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     
-                    # Handle dictionary loss output
                     if isinstance(loss_output, dict):
                         loss = loss_output["total_loss"]
                         for key, val in loss_output.items():
@@ -142,22 +164,24 @@ class Trainer:
                     else:
                         loss = loss_output
                 
+                loss = loss / self.accumulation_steps
                 self.scaler.scale(loss).backward()
                 
-                if self.gradient_clip:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.gradient_clip
-                    )
-                
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                if (batch_idx + 1) % self.accumulation_steps == 0:
+                    if self.gradient_clip:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.gradient_clip
+                        )
+                    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
             else:
                 outputs = self.model(inputs)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
-                # Handle dictionary loss output
                 if isinstance(loss_output, dict):
                     loss = loss_output["total_loss"]
                     for key, val in loss_output.items():
@@ -166,15 +190,18 @@ class Trainer:
                 else:
                     loss = loss_output
                 
+                loss = loss / self.accumulation_steps
                 loss.backward()
                 
-                if self.gradient_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.gradient_clip
-                    )
-                
-                self.optimizer.step()
+                if (batch_idx + 1) % self.accumulation_steps == 0:
+                    if self.gradient_clip:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.gradient_clip
+                        )
+                    
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
             total_loss += loss.item()
 
@@ -248,6 +275,7 @@ class Trainer:
         val_loader: DataLoader,
         epochs: int,
         log_interval: int = 10,
+        freeze_backbone_epochs: int = 0,
     ) -> Dict[str, list]:
         """Train the model for multiple epochs.
 
@@ -273,6 +301,12 @@ class Trainer:
 
         for epoch in range(1, epochs + 1):
             epoch_start_time = time.time()
+            
+            if freeze_backbone_epochs > 0:
+                if epoch == 1:
+                    self.freeze_backbone(freeze=True)
+                elif epoch == freeze_backbone_epochs + 1:
+                    self.freeze_backbone(freeze=False)
 
             train_metrics = self.train_epoch(train_loader, epoch)
             val_metrics = self.validate(val_loader, epoch)
@@ -347,7 +381,7 @@ class Trainer:
         metrics: Dict[str, float],
         is_best: bool = False,
     ) -> None:
-        """Save model checkpoint.
+        """Save model checkpoint in multiple formats.
 
         Args:
             epoch: Current epoch number.
@@ -360,17 +394,27 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'metrics': metrics,
             'history': self.history,
+            'best_val_loss': self.best_val_loss,
         }
 
         if self.scheduler:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
 
-        checkpoint_path = self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pt"
-        torch.save(checkpoint, checkpoint_path)
-
         if is_best:
-            best_path = self.checkpoint_dir / "best_model.pt"
-            torch.save(checkpoint, best_path)
+            best_full = self.checkpoint_dir / "best_model.pt"
+            torch.save(checkpoint, best_full)
+            
+            state_dict_path = self.checkpoint_dir / "best_model_state_dict.pth"
+            torch.save(self.model.state_dict(), state_dict_path)
+            
+            print(f"  ✓ Saved best checkpoint: {best_full}")
+        
+        latest_path = self.checkpoint_dir / "latest_checkpoint.pt"
+        torch.save(checkpoint, latest_path)
+        
+        if epoch % 10 == 0:
+            milestone_path = self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pt"
+            torch.save(checkpoint, milestone_path)
 
     def load_checkpoint(self, checkpoint_path: str) -> Dict:
         """Load model checkpoint.

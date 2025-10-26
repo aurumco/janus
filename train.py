@@ -20,6 +20,7 @@ from src.config.config_loader import ConfigLoader
 from src.data.data_loader import DataLoaderFactory
 from src.data.sequence_strategy import SequenceProcessingStrategy
 from src.evaluation.evaluator import ModelEvaluator
+from src.evaluation.pretrain_evaluator import PretrainEvaluator
 from src.evaluation.visualizer import MetricsVisualizer
 from src.models.mamba_regressor import MambaRegressor
 from src.models.mamba_pretrain import MambaPretrainModel
@@ -230,6 +231,7 @@ def main() -> None:
             dropout=config.get('model.dropout'),
             num_assets=config.get('model.num_assets', 15),
             asset_embedding_dim=config.get('model.asset_embedding_dim', 16),
+            use_gradient_checkpointing=config.get('model.use_gradient_checkpointing', False),
         )
     else:
         model = MambaRegressor(
@@ -337,12 +339,17 @@ def main() -> None:
         scheduler=scheduler,
         gradient_clip=config.get('training.gradient_clip', 1.0),
         checkpoint_dir=checkpoint_dir,
-        log_dir=log_dir if config.get('logging.tensorboard', True) else None,
+        log_dir=log_dir if full_config.get('logging.tensorboard', True) else None,
         early_stopping_patience=config.get('training.early_stopping_patience', 10),
         early_stopping_min_delta=config.get('training.early_stopping_min_delta', 0.0001),
-        use_amp=config.get('device.mixed_precision', True),
+        use_amp=full_config.get('device.mixed_precision', True),
         warmup_epochs=config.get('training.warmup_epochs', 0),
+        accumulation_steps=config.get('training.accumulation_steps', 1),
     )
+    
+    if mode == 'finetune' and config.get('training.freeze_backbone_epochs', 0) > 0:
+        freeze_epochs = config.get('training.freeze_backbone_epochs')
+        print(f"\nWill freeze backbone for first {freeze_epochs} epochs")
 
     if args.resume:
         print(f"Resuming from checkpoint: {args.resume}")
@@ -352,7 +359,8 @@ def main() -> None:
         train_loader=train_loader,
         val_loader=val_loader,
         epochs=config.get('training.epochs', 100),
-        log_interval=config.get('logging.log_interval', 10),
+        log_interval=full_config.get('logging.log_interval', 10),
+        freeze_backbone_epochs=config.get('training.freeze_backbone_epochs', 0) if mode == 'finetune' else 0,
     )
 
     print("\nTraining completed!")
@@ -367,7 +375,7 @@ def main() -> None:
     if best_checkpoint.exists():
         trainer.load_checkpoint(str(best_checkpoint))
 
-    # Only run detailed evaluation for fine-tuning mode
+    # Run mode-specific evaluation
     if mode == 'finetune':
         evaluator = ModelEvaluator(
             model=model,
@@ -394,7 +402,10 @@ def main() -> None:
                 results_dir / 'residuals.png'
             )
     else:
-        print("\nPre-training mode: Skipping detailed evaluation (SSL tasks)")
+        print("\nEvaluating SSL pre-training metrics...")
+        pretrain_evaluator = PretrainEvaluator(model=model, device=device)
+        ssl_metrics = pretrain_evaluator.evaluate(val_loader)
+        pretrain_evaluator.print_metrics(ssl_metrics)
 
     export_dir = results_dir / 'exports'
     export_dir.mkdir(parents=True, exist_ok=True)

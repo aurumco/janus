@@ -23,6 +23,7 @@ class MambaPretrainModel(nn.Module):
         dropout: float = 0.1,
         num_assets: int = 15,
         asset_embedding_dim: int = 16,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         """Initialize Mamba pre-training model.
 
@@ -44,6 +45,7 @@ class MambaPretrainModel(nn.Module):
         self.d_model = d_model
         self.num_assets = num_assets
         self.asset_embedding_dim = asset_embedding_dim
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         if asset_embedding_dim > 0:
             self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
@@ -81,7 +83,9 @@ class MambaPretrainModel(nn.Module):
             nn.Softplus(),
         )
 
-    def forward(self, x: torch.Tensor, asset_ids: torch.Tensor = None) -> Dict[str, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, asset_ids: torch.Tensor = None
+    ) -> Dict[str, torch.Tensor]:
         """Forward pass through pre-training model.
 
         Args:
@@ -91,18 +95,23 @@ class MambaPretrainModel(nn.Module):
         Returns:
             Dictionary with reconstructed sequence and predicted volatility.
         """
+        batch_size, seq_len, _ = x.shape
+
         if self.asset_embedding is not None and asset_ids is not None:
             asset_emb = self.asset_embedding(asset_ids)
-            asset_emb = asset_emb.unsqueeze(1).expand(-1, x.size(1), -1)
+            asset_emb = asset_emb.unsqueeze(1).repeat(1, seq_len, 1)
             x = torch.cat([x, asset_emb], dim=-1)
 
         x = self.input_projection(x)
         x = self.input_norm(x)
 
         for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
-            residual = x
-            x = mamba_layer(x)
-            x = layer_norm(x + residual)
+            if self.training and self.use_gradient_checkpointing:
+                x = x + torch.utils.checkpoint.checkpoint(
+                    lambda x_: mamba_layer(layer_norm(x_)), x, use_reentrant=False
+                )
+            else:
+                x = x + mamba_layer(layer_norm(x))
 
         reconstructed_sequence = self.reconstruction_head(x)
 
