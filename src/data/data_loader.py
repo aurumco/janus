@@ -22,7 +22,6 @@ except Exception:  # pragma: no cover
 from .base_strategy import DataProcessingStrategy
 from .finetune_dataset import FineTuneDataset
 from .pretrain_dataset import PretrainDataset
-from .pretrain_window_dataset import PretrainWindowDataset
 
 
 class DataLoaderFactory:
@@ -172,6 +171,16 @@ class DataLoaderFactory:
             print("- Building PyTorch datasets...")
             if self.mode == "pretrain":
                 if features_path is not None:
+                    # Local import to avoid environment-specific import errors
+                    try:
+                        from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
+                    except Exception:
+                        try:
+                            from src.data.pretrain_window_dataset import PretrainWindowDataset  # type: ignore
+                        except Exception as imp_err:
+                            raise ImportError(
+                                f"Failed to import PretrainWindowDataset: {imp_err}"
+                            )
                     train_dataset = PretrainWindowDataset(
                         features_memmap_path=features_path,
                         asset_ids_memmap_path=asset_ids_path,
