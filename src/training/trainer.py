@@ -14,6 +14,7 @@ except Exception:
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 TENSORBOARD_AVAILABLE = False
 SummaryWriter = None
@@ -132,7 +133,8 @@ class Trainer:
         total_loss = 0.0
         loss_components = {}
 
-        for batch_idx, batch_data in enumerate(train_loader):
+        progress = tqdm(train_loader, total=len(train_loader), desc=f"Train {epoch}", leave=False)
+        for batch_idx, batch_data in enumerate(progress):
             # Handle both tuple (inputs, targets) and dict formats
             if isinstance(batch_data, dict):
                 inputs = batch_data["input_sequence"]
@@ -213,6 +215,7 @@ class Trainer:
                     torch.cuda.empty_cache()
 
         avg_loss = total_loss / len(train_loader)
+        progress.close()
         
         # Cleanup after epoch
         gc.collect()
@@ -241,7 +244,8 @@ class Trainer:
         loss_components = {}
 
         with torch.no_grad():
-            for batch_idx, batch_data in enumerate(val_loader):
+            vprogress = tqdm(val_loader, total=len(val_loader), desc=f"Val {epoch}", leave=False)
+            for batch_idx, batch_data in enumerate(vprogress):
                 # Handle both tuple and dict formats
                 if isinstance(batch_data, dict):
                     inputs = batch_data["input_sequence"]
@@ -273,6 +277,7 @@ class Trainer:
                 total_loss += loss.item()
 
         avg_loss = total_loss / len(val_loader)
+        vprogress.close()
         
         # Cleanup after validation
         gc.collect()

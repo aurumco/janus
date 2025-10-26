@@ -68,20 +68,22 @@ class PretrainLoss(nn.Module):
 
         batch_size = reconstructed_sequence.size(0)
 
-        masked_price_loss = 0.0
-        total_masked = 0
-        
-        for i in range(batch_size):
-            mask_i = mask_binary[i]
-            if mask_i.sum() > 0:
-                pred_masked = reconstructed_sequence[i, mask_i]
-                true_masked = original_sequence[i, mask_i]
-                masked_price_loss += self.reconstruction_loss_fn(
-                    pred_masked, true_masked
-                )
-                total_masked += 1
+        # Vectorized masked reconstruction loss
+        # loss per element (batch, seq, feat)
+        if isinstance(self.reconstruction_loss_fn, nn.HuberLoss):
+            per_elem = torch.nn.functional.smooth_l1_loss(
+                reconstructed_sequence, original_sequence, reduction="none", beta=self.reconstruction_loss_fn.delta
+            )
+        else:
+            per_elem = (reconstructed_sequence - original_sequence) ** 2
 
-        masked_price_loss = masked_price_loss / max(total_masked, 1)
+        # expand mask to feature dimension
+        mask_exp = mask_binary.unsqueeze(-1).expand_as(per_elem)
+        masked_losses = per_elem[mask_exp]
+        if masked_losses.numel() == 0:
+            masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
+        else:
+            masked_price_loss = masked_losses.mean()
 
         volatility_loss = self.volatility_loss_fn(
             predicted_volatility, volatility_target

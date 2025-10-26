@@ -3,6 +3,7 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['ABSL_LOGGING_MIN_LOG_LEVEL'] = '3'
 
 import argparse
 from datetime import datetime
@@ -18,6 +19,11 @@ warnings.filterwarnings(
     "ignore",
     category=FutureWarning,
     message=r"`torch\.cuda\.amp\.(autocast|custom_fwd|custom_bwd).* is deprecated",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r"`torch\.cpu\.amp\.autocast\(.*\)` is deprecated.*",
 )
 
 import torch
