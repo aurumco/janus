@@ -98,12 +98,12 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         schema_cols = [parquet_file.schema[i].name for i in range(len(parquet_file.schema))]
         
         if self.feature_columns is None:
-            cols = [c for c in schema_cols if c != 'asset_id']
+            cols = [c for c in schema_cols if c not in ('asset_id', 'timestamp')]
             if self.target_column is not None and self.target_column in cols:
                 cols.remove(self.target_column)
             feature_cols = cols
         else:
-            feature_cols = [c for c in self.feature_columns if c in schema_cols and c != 'asset_id']
+            feature_cols = [c for c in self.feature_columns if c in schema_cols and c not in ('asset_id', 'timestamp')]
 
         if len(feature_cols) == 0:
             raise ValueError("No valid feature columns available on GPU path")
@@ -138,7 +138,20 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         
         for batch in parquet_file.iter_batches(batch_size=read_chunk_size):
             chunk_pd = batch.to_pandas()
-            chunk = cudf.from_pandas(chunk_pd[feature_cols + ([self.target_column] if self.target_column and self.target_column in chunk_pd.columns else [])])
+            import numpy as _np
+            numeric_cols = [c for c in chunk_pd.columns if _np.issubdtype(chunk_pd[c].dtype, _np.number)]
+            present_feature_cols = [c for c in feature_cols if c in numeric_cols]
+            missing_cols = [c for c in feature_cols if c not in present_feature_cols]
+            
+            for mc in missing_cols:
+                chunk_pd[mc] = 0.0
+            feat_pd = chunk_pd[feature_cols]
+
+            if self.target_column and self.target_column in chunk_pd.columns and _np.issubdtype(chunk_pd[self.target_column].dtype, _np.number):
+                cudf_pd = _np.concatenate
+                chunk = cudf.from_pandas(feat_pd.join(chunk_pd[[self.target_column]]))
+            else:
+                chunk = cudf.from_pandas(feat_pd)
             
             gfeat = chunk[feature_cols].to_cupy().astype(cp.float32)
             
