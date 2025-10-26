@@ -26,7 +26,7 @@ pretrain:
     sequence_length: 72
     batch_size: 34
     num_features: 16
-    use_gpu_preprocess: false
+    use_gpu_preprocess: true
     masking_ratio: 0.15
     volatility_lookahead: 60
     smart_masking_prob: 0.4

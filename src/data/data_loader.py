@@ -300,21 +300,23 @@ class DataLoaderFactory:
             if self.use_streaming_fallback:
                 print("  Backend: Streaming Parquet (MemoryEfficient*) - SLOW")
             elif use_streaming_memmap:
-                print("  Backend: Streaming Memmap (PretrainWindowDataset)")
+                print("  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT")
             else:
-                print("  Backend: In-Memory Dataset (FAST)")
+                print("  Backend: In-Memory Dataset (FAST but HIGH RAM)")
 
             workers = 0 if streaming_active else self.num_workers
             pin_mem = True if not streaming_active else False
+            # Disable shuffle for memmap to avoid random access overhead
+            do_shuffle = self.shuffle_train and not use_streaming_memmap
             
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=self.batch_size,
-                shuffle=self.shuffle_train,
+                shuffle=do_shuffle,
                 num_workers=workers,
                 pin_memory=pin_mem,
                 persistent_workers=False,
-                prefetch_factor=1 if (workers > 0 and not streaming_active) else None,
+                prefetch_factor=2 if (workers > 0 and not streaming_active) else None,
             )
 
             val_loader = DataLoader(
