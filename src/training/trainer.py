@@ -1,6 +1,7 @@
 """Training module for Mamba regressor."""
 
 import gc
+import signal
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -12,6 +13,11 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+try:
+    from src.utils.logger import logger
+except:
+    from ..utils.logger import logger
 
 TENSORBOARD_AVAILABLE = False
 SummaryWriter = None
@@ -89,6 +95,11 @@ class Trainer:
             'val_loss': [],
             'learning_rate': [],
         }
+        self.start_epoch = 1
+        self.interrupted = False
+        
+        # Register signal handler for graceful interruption
+        signal.signal(signal.SIGINT, self._signal_handler)
 
     def freeze_backbone(self, freeze: bool = True) -> None:
         """Freeze or unfreeze backbone layers for fine-tuning.
@@ -112,6 +123,99 @@ class Trainer:
         status = "frozen" if freeze else "unfrozen"
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Backbone {status}. Trainable parameters: {trainable:,}")
+
+    def _signal_handler(self, sig, frame):
+        """Handle Ctrl+C gracefully by saving checkpoint."""
+        print("\n\n⚠️  Training interrupted! Saving checkpoint...")
+        self.interrupted = True
+
+    def save_checkpoint(self, epoch: int, is_best: bool = False, is_interrupted: bool = False) -> None:
+        """Save training checkpoint.
+        
+        Args:
+            epoch: Current epoch number.
+            is_best: Whether this is the best model so far.
+            is_interrupted: Whether saving due to interruption.
+        """
+        if self.checkpoint_dir is None:
+            return
+            
+        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+        
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': actual_model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
+            'best_val_loss': self.best_val_loss,
+            'patience_counter': self.patience_counter,
+            'history': self.history,
+        }
+        
+        # Save latest checkpoint
+        latest_path = self.checkpoint_dir / 'checkpoint_latest.pt'
+        torch.save(checkpoint, latest_path)
+        
+        # Save epoch checkpoint
+        epoch_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pt'
+        torch.save(checkpoint, epoch_path)
+        
+        # Save best model
+        if is_best:
+            best_path = self.checkpoint_dir / 'checkpoint_best.pt'
+            torch.save(checkpoint, best_path)
+        
+        # Save interrupted checkpoint
+        if is_interrupted:
+            interrupted_path = self.checkpoint_dir / 'checkpoint_interrupted.pt'
+            torch.save(checkpoint, interrupted_path)
+
+    def load_checkpoint(self, checkpoint_path: Optional[Path] = None) -> bool:
+        """Load training checkpoint to resume training.
+        
+        Args:
+            checkpoint_path: Path to checkpoint file. If None, tries to load latest.
+            
+        Returns:
+            True if checkpoint was loaded successfully, False otherwise.
+        """
+        if checkpoint_path is None and self.checkpoint_dir:
+            # Try interrupted first, then latest
+            for name in ['checkpoint_interrupted.pt', 'checkpoint_latest.pt']:
+                potential_path = self.checkpoint_dir / name
+                if potential_path.exists():
+                    checkpoint_path = potential_path
+                    break
+        
+        if checkpoint_path is None or not checkpoint_path.exists():
+            return False
+        
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+            actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+            actual_model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            if self.scheduler and checkpoint['scheduler_state_dict']:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            if self.scaler and checkpoint['scaler_state_dict']:
+                self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            
+            self.start_epoch = checkpoint['epoch'] + 1
+            self.best_val_loss = checkpoint['best_val_loss']
+            self.patience_counter = checkpoint['patience_counter']
+            self.history = checkpoint['history']
+            
+            print(f"\n✓ Resumed from epoch {checkpoint['epoch']}")
+            print(f"  Best validation loss: {self.best_val_loss:.6f}")
+            
+            return True
+        except Exception as e:
+            print(f"\n✗ Failed to load checkpoint: {e}")
+            return False
 
     def train_epoch(self, train_loader: DataLoader, epoch: int, epochs: int = 100) -> Dict[str, float]:
         """Train for one epoch.
@@ -315,17 +419,26 @@ class Trainer:
             Training history dictionary.
         """
         actual_model = self.model.module if hasattr(self.model, 'module') else self.model
-        print(f"\nStarting training for {epochs} epochs...")
-        print(f"Device: {self.device}")
-        print(f"Mixed Precision: {self.use_amp}")
-        print(f"Model parameters: {actual_model.get_num_parameters()}")
+        params = actual_model.get_num_parameters()
+        
+        logger.training_start(
+            epochs=epochs,
+            device=str(self.device),
+            mixed_precision=self.use_amp,
+            params=params
+        )
 
         # Log parameter counts once to TensorBoard for visibility
         if self.writer:
             params = actual_model.get_num_parameters()
             self.writer.add_text('model/parameters', f"total: {params['total']}, trainable: {params['trainable']}", 0)
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(self.start_epoch, epochs + 1):
+            if self.interrupted:
+                self.save_checkpoint(epoch - 1, is_interrupted=True)
+                print("\n✓ Checkpoint saved. Training stopped gracefully.")
+                break
+                
             epoch_start_time = time.time()
             
             if freeze_backbone_epochs > 0:
@@ -335,6 +448,12 @@ class Trainer:
                     self.freeze_backbone(freeze=False)
 
             train_metrics = self.train_epoch(train_loader, epoch, epochs)
+            
+            if self.interrupted:
+                self.save_checkpoint(epoch, is_interrupted=True)
+                print("\n✓ Checkpoint saved. Training stopped gracefully.")
+                break
+                
             val_metrics = self.validate(val_loader, epoch)
 
             # Warmup phase: linearly increase LR
@@ -369,20 +488,30 @@ class Trainer:
 
             epoch_time = time.time() - epoch_start_time
             
-            print(f"\nEpoch {epoch}/{epochs} ({epoch_time:.1f}s)")
-            print(f"  • Train Loss:    {train_metrics['loss']:.6f}")
-            print(f"  • Val Loss:      {val_metrics['loss']:.6f}")
-            print(f"  • Learning Rate: {current_lr:.6f}")
+            summary_metrics = {
+                "Train Loss": train_metrics['loss'],
+                "Val Loss": val_metrics['loss'],
+                "Learning Rate": current_lr,
+            }
 
-            if val_metrics['loss'] < self.best_val_loss - self.early_stopping_min_delta:
+            is_best = val_metrics['loss'] < self.best_val_loss - self.early_stopping_min_delta
+            if is_best:
                 self.best_val_loss = val_metrics['loss']
                 self.patience_counter = 0
-                if self.checkpoint_dir:
-                    self.save_checkpoint(epoch, val_metrics, is_best=True)
-                    print(f"  ✓ New best model saved")
             else:
                 self.patience_counter += 1
-                print(f"  ⏳ Patience: {self.patience_counter}/{self.early_stopping_patience}")
+            
+            # Print epoch summary
+            logger.epoch_summary(epoch, epochs, summary_metrics, epoch_time, is_best)
+            
+            if not is_best:
+                logger.info(f"Patience: {self.patience_counter}/{self.early_stopping_patience}", indent=1)
+            
+            # Auto-save checkpoint every epoch
+            if self.checkpoint_dir:
+                self.save_checkpoint(epoch, is_best=is_best)
+                if is_best:
+                    logger.success("New best model saved", indent=1)
 
             if self.patience_counter >= self.early_stopping_patience:
                 print(f"\n{'='*50}")

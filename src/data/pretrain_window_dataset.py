@@ -52,8 +52,9 @@ class PretrainWindowDataset(Dataset):
         self.sequence_length = sequence_length
         self.start_index = start_index
         self.end_index = end_index
-        # Use stride=2 to reduce samples by half for faster training
-        self.stride = 2
+        # Use stride=4 to reduce samples significantly for faster training
+        # This maintains data diversity while reducing computation ~4x
+        self.stride = 4
         max_samples = (n_timesteps - sequence_length) // self.stride + 1
         self.n_samples = max(0, min((end_index - start_index) // self.stride, max_samples))
 

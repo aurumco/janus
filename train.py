@@ -10,11 +10,9 @@ from datetime import datetime
 from pathlib import Path
 
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    module=r"mamba_ssm\..*",
-)
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"mamba_ssm\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"torch\.nn\.parallel\.parallel_apply")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"torch\.utils\.checkpoint")
 
 import torch
 import torch.nn as nn
@@ -41,6 +39,7 @@ from src.training.losses import (
 )
 from src.training.pretrain_losses import PretrainLoss
 from src.utils.helpers import get_device, save_model_architecture, set_seed
+from src.utils.logger import logger
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,17 +149,25 @@ def main() -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n" + "="*70)
-    print(f"MAMBA CRYPTOCURRENCY FORECASTING - {mode.upper()} MODE")
-    print("="*70)
-    print(f"Configuration: {args.config}")
-    print(f"Mode: {mode}")
-    print(f"Data path: {data_path}")
-    print(f"Output directory: {output_dir}")
-    print(f"Results directory: {results_dir}")
+    logger.header(f"Janus Cryptocurrency Forecasting - {mode.upper()} Mode")
+    
+    logger.config_section("Configuration", {
+        "Config file": args.config,
+        "Training mode": mode,
+        "Timestamp": timestamp,
+    })
+    
+    logger.config_section("Paths", {
+        "Data": data_path,
+        "Output": output_dir,
+        "Results": results_dir,
+        "Checkpoints": checkpoint_dir,
+    })
+    
     if args.load_checkpoint:
-        print(f"Loading pretrained weights: {args.load_checkpoint}")
-    print("="*70 + "\n")
+        logger.info(f"Pretrained weights: {args.load_checkpoint}", indent=1)
+    
+    logger.blank_line()
 
     # Prepare data loader based on mode
     use_gpu_pre = config.get('data.use_gpu_preprocess')
@@ -215,20 +222,20 @@ def main() -> None:
             use_streaming_fallback=use_streaming_fallback,
         )
 
-    print("Creating data loaders...")
+    logger.section("Data Loading")
     try:
         start_dl = datetime.now()
         data_loaders = data_factory.create_data_loaders()
         end_dl = datetime.now()
-        print(f"Data loaders created in {(end_dl - start_dl).total_seconds():.2f}s\n")
+        logger.success(f"Data loaders ready in {(end_dl - start_dl).total_seconds():.2f}s", indent=1)
     except MemoryError as me:
-        print("! MemoryError while creating data loaders. Try reducing batch size or sequence length.")
-        print(f"  Details: {me}")
+        logger.error("MemoryError! Reduce batch size or sequence length.", indent=1)
+        logger.info(f"Details: {me}", indent=2)
         raise
     except Exception as e:
         import traceback
-        print("! Failed to create data loaders.")
-        print(f"  Exception: {type(e).__name__}: {e}")
+        logger.error(f"Failed to create data loaders: {type(e).__name__}", indent=1)
+        logger.info(str(e), indent=2)
         traceback.print_exc()
         raise
 
@@ -238,11 +245,11 @@ def main() -> None:
 
 
     dataset_info = data_factory.get_dataset_info()
-
-    print(f"Dataset info: {dataset_info}")
-    print(f"Train batches: {len(data_loaders['train'])}")
-    print(f"Val batches: {len(data_loaders['val'])}")
-    print(f"Test batches: {len(data_loaders['test'])}\n")
+    dataset_info['train_batches'] = len(data_loaders['train'])
+    dataset_info['val_batches'] = len(data_loaders['val'])
+    dataset_info['batch_size'] = config.get('data.batch_size')
+    logger.data_info(dataset_info)
+    logger.blank_line()
 
     # Create model based on mode
     if mode == 'pretrain':
@@ -313,15 +320,20 @@ def main() -> None:
                 pretrained_checkpoint_path=None,
             )
     
+    logger.section("Model Initialization")
+    
     if torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+        logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel", indent=1)
         model = nn.DataParallel(model)
     
     model = model.to(device)
 
     actual_model = model.module if hasattr(model, 'module') else model
-    print("Model created successfully")
-    print(f"Parameters: {actual_model.get_num_parameters()}\n")
+    params = actual_model.get_num_parameters()
+    logger.success("Model created successfully", indent=1)
+    logger.metric("Total parameters", f"{params['total']:,}", indent=1)
+    logger.metric("Trainable parameters", f"{params['trainable']:,}", indent=1)
+    logger.blank_line()
 
     save_model_architecture(model, results_dir / 'model_architecture.txt')
 
@@ -334,12 +346,13 @@ def main() -> None:
             temporal_consistency_weight=config.get('loss.temporal_consistency_weight', 0.1),
             temperature=config.get('loss.temperature', 0.07),
         )
-        print(f"Using Enhanced Pre-training Loss:")
-        print(f"  - Masked Price Weight      : {config.get('loss.masked_price_weight', 1.0)}")
-        print(f"  - Volatility Weight        : {config.get('loss.volatility_weight', 0.5)}")
-        print(f"  - Contrastive Weight       : {config.get('loss.contrastive_weight', 0.2)}")
-        print(f"  - Temporal Consistency     : {config.get('loss.temporal_consistency_weight', 0.1)}")
-        print(f"  - Temperature              : {config.get('loss.temperature', 0.07)}")
+        logger.config_section("Loss Function: Enhanced Pre-training", {
+            "Masked price weight": config.get('loss.masked_price_weight', 1.0),
+            "Volatility weight": config.get('loss.volatility_weight', 0.5),
+            "Contrastive weight": config.get('loss.contrastive_weight', 0.2),
+            "Temporal consistency": config.get('loss.temporal_consistency_weight', 0.1),
+            "Temperature": config.get('loss.temperature', 0.07),
+        })
     else:
         loss_type = config.get('loss.type', 'huber').lower()
         if loss_type == 'mse':
@@ -415,7 +428,7 @@ def main() -> None:
     if scheduler_type == 'cosine':
         total_epochs = config.get('training.epochs')
         scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs)
-        print("Using CosineAnnealingLR scheduler")
+        logger.info(f"Scheduler: CosineAnnealingLR (T_max={total_epochs})", indent=1)
     else:
         scheduler = ReduceLROnPlateau(
             optimizer,
@@ -423,9 +436,11 @@ def main() -> None:
             patience=config.get('training.scheduler_patience', 5),
             factor=config.get('training.scheduler_factor', 0.5),
             min_lr=config.get('training.scheduler_min_lr', 1e-6),
-            verbose=True,
+            verbose=False,
         )
-        print("Using ReduceLROnPlateau scheduler")
+        logger.info("Scheduler: ReduceLROnPlateau", indent=1)
+    
+    logger.blank_line()
 
     trainer = Trainer(
         model=model,
@@ -447,9 +462,17 @@ def main() -> None:
         freeze_epochs = config.get('training.freeze_backbone_epochs')
         print(f"\nWill freeze backbone for first {freeze_epochs} epochs")
 
+    # Try to resume training from checkpoint
     if args.resume:
-        print(f"Resuming from checkpoint: {args.resume}")
-        trainer.load_checkpoint(args.resume)
+        resume_path = Path(args.resume)
+        if trainer.load_checkpoint(resume_path):
+            logger.success(f"Resumed training from: {args.resume}", indent=1)
+        else:
+            logger.warning(f"Could not load checkpoint: {args.resume}", indent=1)
+    else:
+        # Auto-resume from latest if exists
+        if trainer.load_checkpoint():
+            logger.success("Auto-resumed from latest checkpoint", indent=1)
 
     history = trainer.fit(
         train_loader=train_loader,
