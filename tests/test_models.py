@@ -7,7 +7,13 @@ from src.models.mamba_pretrain import MambaPretrainModel
 from src.models.mamba_regressor import MambaRegressor
 
 
-def test_mamba_pretrain_model_forward():
+@pytest.fixture
+def device():
+    """Fixture to get available device (CUDA if available, else CPU)."""
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def test_mamba_pretrain_model_forward(device):
     """Test MambaPretrainModel forward pass."""
     batch_size = 4
     seq_len = 256
@@ -23,10 +29,10 @@ def test_mamba_pretrain_model_forward():
         volatility_head_dim=1,
         num_assets=15,
         asset_embedding_dim=32,
-    )
+    ).to(device)
     
-    x = torch.randn(batch_size, seq_len, input_dim)
-    asset_ids = torch.randint(0, 15, (batch_size,))
+    x = torch.randn(batch_size, seq_len, input_dim).to(device)
+    asset_ids = torch.randint(0, 15, (batch_size,)).to(device)
     
     outputs = model(x, asset_ids)
     
@@ -34,9 +40,10 @@ def test_mamba_pretrain_model_forward():
     assert "predicted_volatility" in outputs
     assert outputs["reconstructed_sequence"].shape == (batch_size, seq_len, 16)
     assert outputs["predicted_volatility"].shape == (batch_size, 1)
+    assert outputs["reconstructed_sequence"].device.type == device.type
 
 
-def test_mamba_regressor_forward():
+def test_mamba_regressor_forward(device):
     """Test MambaRegressor forward pass."""
     batch_size = 4
     seq_len = 96
@@ -49,13 +56,14 @@ def test_mamba_regressor_forward():
         d_conv=4,
         n_layers=2,
         output_dim=1,
-    )
+    ).to(device)
     
-    x = torch.randn(batch_size, seq_len, input_dim)
+    x = torch.randn(batch_size, seq_len, input_dim).to(device)
     
     outputs = model(x)
     
     assert outputs.shape == (batch_size, 1)
+    assert outputs.device.type == device.type
 
 
 def test_model_parameter_count():
@@ -77,7 +85,7 @@ def test_model_parameter_count():
     assert params["trainable"] == params["total"]
 
 
-def test_gradient_checkpointing():
+def test_gradient_checkpointing(device):
     """Test gradient checkpointing flag."""
     model = MambaPretrainModel(
         input_dim=16,
@@ -87,12 +95,13 @@ def test_gradient_checkpointing():
         n_layers=2,
         reconstruction_head_dim=16,
         use_gradient_checkpointing=True,
-    )
+    ).to(device)
     
     assert model.use_gradient_checkpointing is True
     
     model.eval()
-    x = torch.randn(2, 128, 16)
-    outputs = model(x)
+    x = torch.randn(2, 128, 16).to(device)
+    asset_ids = torch.zeros(2, dtype=torch.long).to(device)
+    outputs = model(x, asset_ids)
     
     assert outputs is not None

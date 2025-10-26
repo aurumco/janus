@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import List, Tuple, Optional
 import select
+from tqdm import tqdm
 
 import joblib
 import pandas as pd
@@ -377,7 +378,7 @@ class MultiAssetDatasetBuilder:
         asset_dfs = []
         
         skipped = 0
-        for idx, (symbol, csv_path) in enumerate(assets):
+        for idx, (symbol, csv_path) in enumerate(tqdm(assets, desc="Loading assets", unit="asset")):
             self._log(f"  Processing {symbol} ({idx+1}/{len(assets)})...")
             try:
                 df_asset = self.load_and_resample_asset(

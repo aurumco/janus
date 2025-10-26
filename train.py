@@ -236,16 +236,59 @@ def main() -> None:
             use_gradient_checkpointing=config.get('model.use_gradient_checkpointing', False),
         )
     else:
-        model = MambaRegressor(
-            input_dim=config.get('data.num_features'),
-            d_model=config.get('model.d_model'),
-            d_state=config.get('model.d_state'),
-            d_conv=config.get('model.d_conv'),
-            n_layers=config.get('model.n_layers'),
-            output_dim=config.get('model.output_dim', 1),
-            dropout=config.get('model.dropout'),
-            pretrained_checkpoint_path=args.load_checkpoint,
-        )
+        checkpoint_path = None
+        if args.load_checkpoint:
+            from pathlib import Path
+            checkpoint_path_obj = Path(args.load_checkpoint)
+            
+            if checkpoint_path_obj.exists():
+                checkpoint_path = args.load_checkpoint
+                print(f"✓ Found checkpoint: {checkpoint_path}")
+            else:
+                possible_paths = [
+                    Path("/kaggle/input") / args.load_checkpoint,
+                    Path("/kaggle/working") / args.load_checkpoint,
+                    Path("checkpoints/pretrain") / args.load_checkpoint,
+                ]
+                
+                for alt_path in possible_paths:
+                    if alt_path.exists():
+                        checkpoint_path = str(alt_path)
+                        print(f"✓ Found checkpoint at alternative path: {checkpoint_path}")
+                        break
+                
+                if checkpoint_path is None:
+                    print(f"⚠ WARNING: Checkpoint not found: {args.load_checkpoint}")
+                    print(f"⚠ Checked paths:")
+                    print(f"  - {checkpoint_path_obj}")
+                    for p in possible_paths:
+                        print(f"  - {p}")
+                    print(f"⚠ Falling back to random initialization")
+        
+        try:
+            model = MambaRegressor(
+                input_dim=config.get('data.num_features'),
+                d_model=config.get('model.d_model'),
+                d_state=config.get('model.d_state'),
+                d_conv=config.get('model.d_conv'),
+                n_layers=config.get('model.n_layers'),
+                output_dim=config.get('model.output_dim', 1),
+                dropout=config.get('model.dropout'),
+                pretrained_checkpoint_path=checkpoint_path,
+            )
+        except Exception as e:
+            print(f"⚠ ERROR loading checkpoint: {e}")
+            print(f"⚠ Falling back to random initialization")
+            model = MambaRegressor(
+                input_dim=config.get('data.num_features'),
+                d_model=config.get('model.d_model'),
+                d_state=config.get('model.d_state'),
+                d_conv=config.get('model.d_conv'),
+                n_layers=config.get('model.n_layers'),
+                output_dim=config.get('model.output_dim', 1),
+                dropout=config.get('model.dropout'),
+                pretrained_checkpoint_path=None,
+            )
     
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")

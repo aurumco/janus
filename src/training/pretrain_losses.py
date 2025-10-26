@@ -1,5 +1,6 @@
-"""Loss functions for self-supervised pre-training."""
+"""Custom loss functions for SSL pre-training with multi-asset awareness."""
 
+import random
 from typing import Dict
 
 import torch
@@ -114,7 +115,7 @@ class PretrainLoss(nn.Module):
     def _contrastive_loss(
         self, embeddings: torch.Tensor, asset_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Contrastive loss to separate different assets, group similar ones.
+        """Memory-efficient contrastive loss with sampled negatives (O(n) instead of O(n²)).
 
         Args:
             embeddings: Sequence representations (batch, seq_len, features).
@@ -124,25 +125,57 @@ class PretrainLoss(nn.Module):
             Contrastive loss value.
         """
         pooled = embeddings.mean(dim=1)
-        
         pooled_normalized = F.normalize(pooled, p=2, dim=1)
         
-        sim_matrix = torch.matmul(pooled_normalized, pooled_normalized.T) / self.temperature
+        batch_size = pooled.size(0)
+        num_negatives = min(batch_size - 1, 8)
         
-        same_asset_mask = (asset_ids.unsqueeze(1) == asset_ids.unsqueeze(0)).float()
+        total_loss = 0.0
+        valid_samples = 0
         
-        same_asset_mask = same_asset_mask - torch.eye(
-            same_asset_mask.size(0), device=same_asset_mask.device
-        )
+        for i in range(batch_size):
+            anchor = pooled_normalized[i]
+            anchor_asset = asset_ids[i]
+            
+            positive_mask = (asset_ids == anchor_asset)
+            positive_indices = positive_mask.nonzero(as_tuple=True)[0]
+            positive_indices = positive_indices[positive_indices != i]
+            
+            if len(positive_indices) == 0:
+                continue
+            
+            pos_idx = positive_indices[0]
+            positive = pooled_normalized[pos_idx]
+            pos_sim = F.cosine_similarity(
+                anchor.unsqueeze(0), positive.unsqueeze(0)
+            ) / self.temperature
+            
+            negative_mask = (asset_ids != anchor_asset)
+            negative_indices = negative_mask.nonzero(as_tuple=True)[0]
+            
+            if len(negative_indices) == 0:
+                continue
+            
+            num_neg_samples = min(num_negatives, len(negative_indices))
+            neg_indices = random.sample(
+                negative_indices.tolist(), num_neg_samples
+            )
+            negatives = pooled_normalized[neg_indices]
+            neg_sims = F.cosine_similarity(
+                anchor.unsqueeze(0), negatives
+            ) / self.temperature
+            
+            pos_exp = torch.exp(pos_sim)
+            neg_exp = torch.exp(neg_sims).sum()
+            
+            sample_loss = -torch.log(pos_exp / (pos_exp + neg_exp + 1e-8))
+            total_loss += sample_loss
+            valid_samples += 1
         
-        exp_sim = torch.exp(sim_matrix)
+        if valid_samples == 0:
+            return torch.tensor(0.0, device=embeddings.device)
         
-        positive_pairs = (exp_sim * same_asset_mask).sum(dim=1)
-        all_pairs = exp_sim.sum(dim=1)
-        
-        loss = -torch.log((positive_pairs + 1e-8) / (all_pairs + 1e-8))
-        
-        return loss.mean()
+        return total_loss / valid_samples
 
     def _temporal_consistency_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Penalize abrupt changes in temporal embeddings.
