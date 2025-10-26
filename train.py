@@ -106,7 +106,6 @@ def main() -> None:
 
     set_seed(full_config.get('seed', 42))
 
-    # Filters are already applied at import time to catch third-party warnings
 
     device = get_device(
         use_cuda=full_config.get('device.use_cuda', True),
@@ -130,11 +129,15 @@ def main() -> None:
             self.prefix = prefix
         
         def get(self, key, default=None):
-            # Try mode-specific first, then fall back to global
+            """Fetch config with mode prefix first, then fall back to global.
+
+            Example: if prefix='pretrain' and key='data.path', this checks
+            'pretrain.data.path' first, then 'data.path'.
+            """
             mode_key = f"{self.prefix}.{key}"
-            if self.full_cfg.config.get(self.prefix) and key in str(self.full_cfg.config.get(self.prefix, {})):
-                return self.full_cfg.get(mode_key, default)
-            # Fall back to global config
+            mode_val = self.full_cfg.get(mode_key, None)
+            if mode_val is not None:
+                return mode_val
             return self.full_cfg.get(key, default)
     
     config = ModeConfig(full_config, config_prefix)
