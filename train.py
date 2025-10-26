@@ -8,13 +8,24 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module=r"mamba_ssm\..*",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r"`torch\.cuda\.amp\.(autocast|custom_fwd|custom_bwd).* is deprecated",
+)
+
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import numpy as np
-import warnings
 
 from src.config.config_loader import ConfigLoader
 from src.data.data_loader import DataLoaderFactory
@@ -95,16 +106,7 @@ def main() -> None:
 
     set_seed(full_config.get('seed', 42))
 
-    warnings.filterwarnings(
-        "ignore",
-        category=FutureWarning,
-        module=r"mamba_ssm\..*",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        category=FutureWarning,
-        message=r"`torch\.cuda\.amp\.(autocast|custom_fwd|custom_bwd).* is deprecated",
-    )
+    # Filters are already applied at import time to catch third-party warnings
 
     device = get_device(
         use_cuda=full_config.get('device.use_cuda', True),
@@ -238,7 +240,6 @@ def main() -> None:
     else:
         checkpoint_path = None
         if args.load_checkpoint:
-            from pathlib import Path
             checkpoint_path_obj = Path(args.load_checkpoint)
             
             if checkpoint_path_obj.exists():
