@@ -78,14 +78,14 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
         return X, y
 
-    def process_gpu(self, parquet_path: str) -> Tuple[np.ndarray, np.ndarray]:  # type: ignore[name-defined]
-        """GPU-accelerated chunked processing to avoid OOM.
+    def process_gpu(self, parquet_path: str) -> Tuple[str, str, int, int]:
+        """GPU-accelerated chunked processing writing base features memmap.
 
         Args:
             parquet_path: Path to parquet file to read in chunks.
 
         Returns:
-            Tuple (X, y) as NumPy arrays (backed by memmap for efficiency).
+            Tuple (features_path, asset_ids_path, n_timesteps, n_features) for streaming dataset.
         """
         import cupy as cp
         import cudf
@@ -115,84 +115,53 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
                 f"Not enough data points. Need at least {self.sequence_length}, got {n_timesteps}"
             )
 
-        n_samples = n_timesteps - self.sequence_length + 1
-        
         tmpdir = "/kaggle/working" if os.path.exists("/kaggle/working") else tempfile.gettempdir()
-        X_path = os.path.join(tmpdir, f"X_seq_{os.getpid()}.dat")
-        y_path = os.path.join(tmpdir, f"y_seq_{os.getpid()}.dat")
+        features_path = os.path.join(tmpdir, f"features_{os.getpid()}.dat")
+        asset_ids_path = os.path.join(tmpdir, f"asset_ids_{os.getpid()}.dat")
         
-        X_mmap = np.memmap(X_path, dtype=np.float32, mode='w+', shape=(n_samples, self.sequence_length, n_features))
-        y_mmap = np.memmap(y_path, dtype=np.float32, mode='w+', shape=(n_samples,))
+        features_mmap = np.memmap(features_path, dtype=np.float32, mode='w+', shape=(n_timesteps, n_features))
+        asset_ids_mmap = np.memmap(asset_ids_path, dtype=np.int64, mode='w+', shape=(n_timesteps,))
 
-        read_chunk_size = 200000
-        print(f"  GPU chunked processing: {n_timesteps} rows, read_chunk={read_chunk_size}")
+        read_chunk_size = 500000
+        print(f"  GPU chunked read: {n_timesteps} rows, chunk={read_chunk_size}")
         
         try:
             from tqdm import tqdm
-            pbar = tqdm(total=n_samples, desc="  Building sequences", unit="seq")
+            pbar = tqdm(total=n_timesteps, desc="  Reading features", unit="row")
         except Exception:
             pbar = None
 
         written = 0
-        row_offset = 0
         
         for batch in parquet_file.iter_batches(batch_size=read_chunk_size):
             chunk_pd = batch.to_pandas()
             import numpy as _np
             numeric_cols = [c for c in chunk_pd.columns if _np.issubdtype(chunk_pd[c].dtype, _np.number)]
-            present_feature_cols = [c for c in feature_cols if c in numeric_cols]
-            missing_cols = [c for c in feature_cols if c not in present_feature_cols]
-            
+            present_cols = [c for c in feature_cols if c in numeric_cols]
+            missing_cols = [c for c in feature_cols if c not in present_cols]
             for mc in missing_cols:
                 chunk_pd[mc] = 0.0
             feat_pd = chunk_pd[feature_cols]
-
-            if self.target_column and self.target_column in chunk_pd.columns and _np.issubdtype(chunk_pd[self.target_column].dtype, _np.number):
-                cudf_pd = _np.concatenate
-                chunk = cudf.from_pandas(feat_pd.join(chunk_pd[[self.target_column]]))
+            chunk = cudf.from_pandas(feat_pd)
+            gfeat = chunk.to_cupy().astype(cp.float32)
+            feat_cpu = cp.asnumpy(gfeat)
+            
+            chunk_len = len(feat_cpu)
+            end_write = min(written + chunk_len, n_timesteps)
+            actual = end_write - written
+            features_mmap[written:end_write] = feat_cpu[:actual]
+            
+            if 'asset_id' in chunk_pd.columns:
+                aids = chunk_pd['asset_id'].values.astype(np.int64)
             else:
-                chunk = cudf.from_pandas(feat_pd)
+                aids = np.zeros(chunk_len, dtype=np.int64)
+            asset_ids_mmap[written:end_write] = aids[:actual]
             
-            gfeat = chunk[feature_cols].to_cupy().astype(cp.float32)
-            
-            if self.target_column is None or self.target_column not in chunk.columns:
-                gtargets = cp.zeros(len(chunk), dtype=cp.float32)
-            else:
-                gtargets = chunk[self.target_column].to_cupy().astype(cp.float32)
-            
-            row_offset += len(chunk)
-            
-            chunk_len = len(chunk)
-            if chunk_len < self.sequence_length:
-                continue
-                
-            try:
-                from cupy.lib.stride_tricks import as_strided
-                n_win = chunk_len - self.sequence_length + 1
-                shape = (n_win, self.sequence_length, n_features)
-                strides = (gfeat.strides[0], gfeat.strides[0], gfeat.strides[1])
-                X_chunk = as_strided(gfeat, shape=shape, strides=strides)
-            except Exception:
-                n_win = chunk_len - self.sequence_length + 1
-                X_chunk = cp.empty((n_win, self.sequence_length, n_features), dtype=cp.float32)
-                for i in range(n_win):
-                    X_chunk[i] = gfeat[i:i + self.sequence_length]
-            
-            y_chunk = gtargets[self.sequence_length - 1: self.sequence_length - 1 + n_win]
-            
-            X_cpu = cp.asnumpy(X_chunk)
-            y_cpu = cp.asnumpy(y_chunk)
-            
-            end_write = min(written + len(X_cpu), n_samples)
-            actual_write = end_write - written
-            X_mmap[written:end_write] = X_cpu[:actual_write]
-            y_mmap[written:end_write] = y_cpu[:actual_write]
             written = end_write
-            
             if pbar:
-                pbar.update(actual_write)
+                pbar.update(actual)
             
-            del gfeat, gtargets, X_chunk, y_chunk, X_cpu, y_cpu, chunk, chunk_pd
+            del gfeat, feat_cpu, chunk, chunk_pd, aids
             cp.get_default_memory_pool().free_all_blocks()
             import gc
             gc.collect()
@@ -200,19 +169,11 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if pbar:
             pbar.close()
         
-        X_mmap.flush()
-        y_mmap.flush()
-        X = np.array(X_mmap[:written], dtype=np.float32)
-        y = np.array(y_mmap[:written], dtype=np.float32)
+        features_mmap.flush()
+        asset_ids_mmap.flush()
+        del features_mmap, asset_ids_mmap
         
-        del X_mmap, y_mmap
-        try:
-            os.unlink(X_path)
-            os.unlink(y_path)
-        except Exception:
-            pass
-        
-        return X, y
+        return features_path, asset_ids_path, written, n_features
 
     def _create_sequences(
         self,

@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
 from .base_strategy import DataProcessingStrategy
 from .finetune_dataset import FineTuneDataset
 from .pretrain_dataset import PretrainDataset
+from .pretrain_window_dataset import PretrainWindowDataset
 
 
 class DataLoaderFactory:
@@ -118,69 +119,126 @@ class DataLoaderFactory:
 
             print("- Processing sequences (vectorized sliding windows)...")
             if gdata is not None and self.use_gpu_preprocess:
-                X, y = self.processing_strategy.process_gpu(gdata)
+                features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
+                print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
+                mem_info("  After GPU process")
+                X = None
+                y = None
             else:
                 X, y = self.processing_strategy.process(data)
-            print(f"  Sequences: X={X.shape}, y={y.shape}")
-            mem_info("  After process")
+                print(f"  Sequences: X={X.shape}, y={y.shape}")
+                mem_info("  After process")
+                features_path = None
+                asset_ids_path = None
+                n_timesteps = None
+                n_features = None
 
             print("- Splitting train/val/test...")
-            n_samples = len(X)
+            if X is not None:
+                n_samples = len(X)
+            else:
+                n_samples = n_timesteps - self.sequence_length + 1
             train_end = int(n_samples * self.train_ratio)
             val_end = int(n_samples * (self.train_ratio + self.val_ratio))
 
-            X_train = X[:train_end]
-            y_train = y[:train_end]
-
-            X_val = X[train_end:val_end]
-            y_val = y[train_end:val_end]
-            
-            X_test = X[val_end:]
-            y_test = y[val_end:]
-
-            asset_ids = None
-            if self.mode == "pretrain" and "asset_id" in data.columns:
-                import numpy as np
-                asset_ids = data["asset_id"].values.astype(np.int64)
-                asset_ids = asset_ids[self.sequence_length - 1: self.sequence_length - 1 + n_samples]
-                asset_ids_train = asset_ids[:train_end]
-                asset_ids_val = asset_ids[train_end:val_end]
-                asset_ids_test = asset_ids[val_end:]
+            if X is not None:
+                X_train = X[:train_end]
+                y_train = y[:train_end]
+                X_val = X[train_end:val_end]
+                y_val = y[train_end:val_end]
+                X_test = X[val_end:]
+                y_test = y[val_end:]
             else:
-                import numpy as np
-                asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
-                asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
-                asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
+                X_train = X_val = X_test = None
+                y_train = y_val = y_test = None
+
+            if X is not None:
+                asset_ids = None
+                if self.mode == "pretrain" and data is not None and "asset_id" in data.columns:
+                    import numpy as np
+                    asset_ids = data["asset_id"].values.astype(np.int64)
+                    asset_ids = asset_ids[self.sequence_length - 1: self.sequence_length - 1 + n_samples]
+                    asset_ids_train = asset_ids[:train_end]
+                    asset_ids_val = asset_ids[train_end:val_end]
+                    asset_ids_test = asset_ids[val_end:]
+                else:
+                    import numpy as np
+                    asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
+                    asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
+                    asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
+            else:
+                asset_ids_train = asset_ids_val = asset_ids_test = None
 
             print("- Building PyTorch datasets...")
             if self.mode == "pretrain":
-                train_dataset = PretrainDataset(
-                    X_train,
-                    asset_ids=asset_ids_train,
-                    sequence_length=self.sequence_length,
-                    masking_ratio=self.masking_ratio,
-                    volatility_lookahead=self.volatility_lookahead,
-                    smart_masking_prob=self.smart_masking_prob,
-                    cross_asset_masking_prob=self.cross_asset_masking_prob,
-                )
-                val_dataset = PretrainDataset(
-                    X_val,
-                    asset_ids=asset_ids_val,
-                    sequence_length=self.sequence_length,
-                    masking_ratio=self.masking_ratio,
-                    volatility_lookahead=self.volatility_lookahead,
-                    smart_masking_prob=self.smart_masking_prob,
-                    cross_asset_masking_prob=self.cross_asset_masking_prob,
-                )
-                test_dataset = PretrainDataset(
-                    X_test,
-                    asset_ids=asset_ids_test,
-                    sequence_length=self.sequence_length,
-                    masking_ratio=self.masking_ratio,
-                    volatility_lookahead=self.volatility_lookahead,
-                    smart_masking_prob=self.smart_masking_prob,
-                    cross_asset_masking_prob=self.cross_asset_masking_prob,
-                )
+                if features_path is not None:
+                    train_dataset = PretrainWindowDataset(
+                        features_memmap_path=features_path,
+                        asset_ids_memmap_path=asset_ids_path,
+                        n_timesteps=n_timesteps,
+                        n_features=n_features,
+                        sequence_length=self.sequence_length,
+                        start_index=0,
+                        end_index=train_end,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
+                    val_dataset = PretrainWindowDataset(
+                        features_memmap_path=features_path,
+                        asset_ids_memmap_path=asset_ids_path,
+                        n_timesteps=n_timesteps,
+                        n_features=n_features,
+                        sequence_length=self.sequence_length,
+                        start_index=train_end,
+                        end_index=val_end,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
+                    test_dataset = PretrainWindowDataset(
+                        features_memmap_path=features_path,
+                        asset_ids_memmap_path=asset_ids_path,
+                        n_timesteps=n_timesteps,
+                        n_features=n_features,
+                        sequence_length=self.sequence_length,
+                        start_index=val_end,
+                        end_index=n_samples,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
+                else:
+                    train_dataset = PretrainDataset(
+                        X_train,
+                        asset_ids=asset_ids_train,
+                        sequence_length=self.sequence_length,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
+                    val_dataset = PretrainDataset(
+                        X_val,
+                        asset_ids=asset_ids_val,
+                        sequence_length=self.sequence_length,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
+                    test_dataset = PretrainDataset(
+                        X_test,
+                        asset_ids=asset_ids_test,
+                        sequence_length=self.sequence_length,
+                        masking_ratio=self.masking_ratio,
+                        volatility_lookahead=self.volatility_lookahead,
+                        smart_masking_prob=self.smart_masking_prob,
+                        cross_asset_masking_prob=self.cross_asset_masking_prob,
+                    )
             else:
                 train_dataset = FineTuneDataset(X_train, y_train)
                 val_dataset = FineTuneDataset(X_val, y_val)
