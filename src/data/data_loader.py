@@ -50,6 +50,7 @@ class DataLoaderFactory:
         cross_asset_masking_prob: float = 0.3,
         use_gpu_preprocess: bool = True,
         use_streaming_fallback: bool = False,
+        verbose: bool = False,
     ) -> None:
         """Initialize data loader factory.
 
@@ -85,6 +86,7 @@ class DataLoaderFactory:
         self.cross_asset_masking_prob = cross_asset_masking_prob
         self.use_gpu_preprocess = use_gpu_preprocess
         self.use_streaming_fallback = use_streaming_fallback
+        self.verbose = verbose
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -105,40 +107,48 @@ class DataLoaderFactory:
                 print(f"{prefix} | RSS={mi.rss/1e9:.2f} GB, VMS={mi.vms/1e9:.2f} GB")
 
         try:
-            print("- Reading parquet file...")
-            mem_info("  Before read")
+            if self.verbose:
+                print("- Reading parquet file...")
+                mem_info("  Before read")
             data = None
             gdata = None
             if self.use_gpu_preprocess:
                 try:
                     import cudf  # type: ignore
                     gdata = str(self.data_path)
-                    print(f"  Using cuDF GPU processing (chunked read)")
+                    if self.verbose:
+                        print(f"  Using cuDF GPU processing (chunked read)")
                 except Exception as ge:
-                    print(f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU")
+                    if self.verbose:
+                        print(f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU")
                     gdata = None
             if gdata is None:
                 data = pd.read_parquet(self.data_path, engine="pyarrow")
-                print(f"  Loaded DataFrame: shape={data.shape}")
-                mem_info("  After read")
+                if self.verbose:
+                    print(f"  Loaded DataFrame: shape={data.shape}")
+                    mem_info("  After read")
 
-            print("- Processing sequences (vectorized sliding windows)...")
+            if self.verbose:
+                print("- Processing sequences (vectorized sliding windows)...")
             if gdata is not None and self.use_gpu_preprocess:
                 features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
-                print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
-                mem_info("  After GPU process")
+                if self.verbose:
+                    print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
+                    mem_info("  After GPU process")
                 X = None
                 y = None
             else:
                 X, y = self.processing_strategy.process(data)
-                print(f"  Sequences: X={X.shape}, y={y.shape}")
-                mem_info("  After process")
+                if self.verbose:
+                    print(f"  Sequences: X={X.shape}, y={y.shape}")
+                    mem_info("  After process")
                 features_path = None
                 asset_ids_path = None
                 n_timesteps = None
                 n_features = None
 
-            print("- Splitting train/val/test...")
+            if self.verbose:
+                print("- Splitting train/val/test...")
             if X is not None:
                 n_samples = len(X)
             else:
@@ -174,10 +184,12 @@ class DataLoaderFactory:
             else:
                 asset_ids_train = asset_ids_val = asset_ids_test = None
 
-            print("- Building PyTorch datasets...")
+            if self.verbose:
+                print("- Building PyTorch datasets...")
             if self.mode == "pretrain":
                 if self.use_streaming_fallback:
-                    print("  Using streaming fallback mode (direct parquet read)")
+                    if self.verbose:
+                        print("  Using streaming fallback mode (direct parquet read)")
                     full_dataset = MemoryEfficientPretrainDataset(
                         parquet_path=str(self.data_path),
                         sequence_length=self.sequence_length,
@@ -294,15 +306,17 @@ class DataLoaderFactory:
                     val_dataset = FineTuneDataset(X_val, y_val)
                     test_dataset = FineTuneDataset(X_test, y_test)
 
-            print("- Creating DataLoader objects...")
+            if self.verbose:
+                print("- Creating DataLoader objects...")
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
             streaming_active = self.use_streaming_fallback or use_streaming_memmap
-            if self.use_streaming_fallback:
-                print("  Backend: Streaming Parquet (MemoryEfficient*) - SLOW")
-            elif use_streaming_memmap:
-                print("  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT")
-            else:
-                print("  Backend: In-Memory Dataset (FAST but HIGH RAM)")
+            if self.verbose:
+                if self.use_streaming_fallback:
+                    print("  Backend: Streaming Parquet (MemoryEfficient*) - SLOW")
+                elif use_streaming_memmap:
+                    print("  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT")
+                else:
+                    print("  Backend: In-Memory Dataset (FAST but HIGH RAM)")
 
             workers = 0 if streaming_active else self.num_workers
             pin_mem = True if not streaming_active else False

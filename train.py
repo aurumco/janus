@@ -20,6 +20,12 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import numpy as np
+try:
+    import absl.logging as absl_logging  # type: ignore
+    absl_logging.set_verbosity(absl_logging.ERROR)
+    absl_logging.use_python_logging()
+except Exception:
+    pass
 
 from src.config.config_loader import ConfigLoader
 from src.data.data_loader import DataLoaderFactory
@@ -471,7 +477,7 @@ def main() -> None:
             logger.warning(f"Could not load checkpoint: {args.resume}", indent=1)
     else:
         # Auto-resume from latest if exists
-        if trainer.load_checkpoint():
+        if trainer.load_checkpoint(None):
             logger.success("Auto-resumed from latest checkpoint", indent=1)
 
     history = trainer.fit(
@@ -482,14 +488,15 @@ def main() -> None:
         freeze_backbone_epochs=config.get('training.freeze_backbone_epochs', 0) if mode == 'finetune' else 0,
     )
 
-    print("\nTraining completed!")
+    logger.success("Training completed!", indent=0)
 
     visualizer = MetricsVisualizer()
 
-    print("Plotting training curves...")
+    logger.section("Visualization")
+    logger.info("Plotting training curves...", indent=1)
     visualizer.plot_training_curves(history, results_dir)
 
-    print("Loading best model for evaluation...")
+    logger.info("Loading best model for evaluation...", indent=1)
     best_checkpoint = checkpoint_dir / 'best_model.pt'
     if best_checkpoint.exists():
         trainer.load_checkpoint(str(best_checkpoint))
@@ -501,7 +508,7 @@ def main() -> None:
             device=device,
         )
 
-        print("\nEvaluating on test set...")
+        logger.section("Evaluation (Test)")
         test_metrics = evaluator.evaluate(test_loader)
 
         evaluator.print_metrics(test_metrics)
