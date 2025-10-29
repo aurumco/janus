@@ -501,6 +501,18 @@ def main() -> None:
     )
 
     logger.success("Training completed!", indent=0)
+    
+    # Check if training produced valid losses
+    import math
+    if history['train_loss'] and history['val_loss']:
+        last_train_loss = history['train_loss'][-1]
+        last_val_loss = history['val_loss'][-1]
+        if math.isnan(last_train_loss) or math.isnan(last_val_loss):
+            logger.warning("Training produced NaN losses - model may not have trained properly", indent=1)
+            logger.info("This could be due to:", indent=1)
+            logger.info("  - Learning rate too high", indent=2)
+            logger.info("  - Numerical instability in loss computation", indent=2)
+            logger.info("  - Model initialization issues", indent=2)
 
     visualizer = MetricsVisualizer()
 
@@ -509,9 +521,12 @@ def main() -> None:
     visualizer.plot_training_curves(history, results_dir)
 
     logger.info("Loading best model for evaluation...", indent=1)
-    best_checkpoint = checkpoint_dir / 'best_model.pt'
+    best_checkpoint = checkpoint_dir / 'checkpoint_best.pt'
     if best_checkpoint.exists():
+        logger.success("Found best checkpoint, loading...", indent=2)
         trainer.load_checkpoint(str(best_checkpoint))
+    else:
+        logger.warning("No best checkpoint found - using current model state", indent=2)
 
     # Run mode-specific evaluation
     if mode == 'finetune':

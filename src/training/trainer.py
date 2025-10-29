@@ -298,13 +298,31 @@ class Trainer:
                 else:
                     loss = loss_output
 
-            total_loss += loss.item()
+            loss_value = loss.item()
+            
+            # Check for NaN or inf in loss
+            if not torch.isfinite(loss):
+                print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
+                print(f"  Loss value: {loss_value}")
+                print(f"  Skipping this batch...")
+                continue
+            
+            total_loss += loss_value
+            
+            # Reduce GC frequency to minimize overhead
             if batch_idx > 0 and batch_idx % 1000 == 0:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-        avg_loss = total_loss / len(train_loader)
+        # Check if we got any valid losses
+        num_batches = len(train_loader)
+        if total_loss == 0 and num_batches > 0:
+            print("\nWARNING: All batches had zero loss!")
+            avg_loss = float('nan')
+        else:
+            avg_loss = total_loss / max(num_batches, 1)
+        
         progress.close()
         
         gc.collect()
@@ -366,7 +384,14 @@ class Trainer:
                 else:
                     loss = loss_output
 
-                total_loss += loss.item()
+                loss_value = loss.item()
+                
+                # Check for NaN in validation
+                if not torch.isfinite(loss):
+                    print(f"\nWARNING: Non-finite loss in validation batch {batch_idx}")
+                    continue
+                
+                total_loss += loss_value
 
         avg_loss = total_loss / len(val_loader)
         vprogress.close()

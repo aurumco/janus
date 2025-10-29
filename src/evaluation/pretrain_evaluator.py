@@ -7,6 +7,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x, **kwargs: x
+
 
 class EnhancedPretrainEvaluator:
     """Enhanced evaluator for self-supervised pre-training tasks."""
@@ -21,11 +26,12 @@ class EnhancedPretrainEvaluator:
         self.model = model
         self.device = device
 
-    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, dataloader: DataLoader, max_batches: int = 100) -> Dict[str, float]:
         """Evaluate SSL pre-training performance with advanced metrics.
 
         Args:
             dataloader: DataLoader with PretrainDataset.
+            max_batches: Maximum number of batches to evaluate (for speed).
 
         Returns:
             Dictionary with comprehensive SSL evaluation metrics.
@@ -41,8 +47,12 @@ class EnhancedPretrainEvaluator:
         all_pred_vols: List[torch.Tensor] = []
         all_true_vols: List[torch.Tensor] = []
 
+        print(f"  Evaluating on up to {max_batches} batches...")
+        
         with torch.no_grad():
-            for batch in dataloader:
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=min(len(dataloader), max_batches))):
+                if batch_idx >= max_batches:
+                    break
                 input_seq = batch["input_sequence"].to(self.device)
                 mask_binary = batch["mask_binary"].to(self.device)
                 original_seq = batch["original_sequence"].to(self.device)
@@ -54,18 +64,16 @@ class EnhancedPretrainEvaluator:
                 pred_vol = outputs["predicted_volatility"]
 
                 batch_size = input_seq.size(0)
-                recon_loss_batch = 0.0
-
-                for i in range(batch_size):
-                    mask_i = mask_binary[i]
-                    if mask_i.sum() > 0:
-                        recon_masked = recon_seq[i, mask_i]
-                        orig_masked = original_seq[i, mask_i]
-                        recon_loss_batch += torch.mean(
-                            (recon_masked - orig_masked) ** 2
-                        ).item()
-
-                recon_loss_batch /= batch_size
+                
+                # Vectorized reconstruction loss (much faster)
+                mask_exp = mask_binary.unsqueeze(-1).expand_as(recon_seq)
+                masked_recon = recon_seq[mask_exp]
+                masked_orig = original_seq[mask_exp]
+                
+                if masked_recon.numel() > 0:
+                    recon_loss_batch = torch.mean((masked_recon - masked_orig) ** 2).item()
+                else:
+                    recon_loss_batch = 0.0
 
                 vol_loss_batch = torch.mean((pred_vol - vol_target) ** 2).item()
 

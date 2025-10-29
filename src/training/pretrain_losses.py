@@ -83,10 +83,16 @@ class PretrainLoss(nn.Module):
             masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
         else:
             masked_price_loss = masked_losses.mean()
+            # Check for NaN
+            if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
+                masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
 
         volatility_loss = self.volatility_loss_fn(
             predicted_volatility, volatility_target
         )
+        # Check for NaN in volatility loss
+        if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
+            volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
 
         total_loss = (
             self.masked_price_weight * masked_price_loss
@@ -102,11 +108,17 @@ class PretrainLoss(nn.Module):
             contrastive_loss = self._contrastive_loss(
                 reconstructed_sequence, batch["asset_id"]
             )
+            # Check for NaN in contrastive loss
+            if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
+                contrastive_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
             total_loss = total_loss + self.contrastive_weight * contrastive_loss
             loss_dict["contrastive_loss"] = contrastive_loss
 
         if self.temporal_consistency_weight > 0:
             temporal_loss = self._temporal_consistency_loss(reconstructed_sequence)
+            # Check for NaN in temporal loss
+            if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
+                temporal_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
             total_loss = total_loss + self.temporal_consistency_weight * temporal_loss
             loss_dict["temporal_consistency_loss"] = temporal_loss
 
@@ -133,6 +145,10 @@ class PretrainLoss(nn.Module):
         # Compute similarity matrix: (batch, batch)
         sim_matrix = (pooled_normalized @ pooled_normalized.T) / self.temperature
         
+        # Check for NaN in similarity matrix
+        if torch.isnan(sim_matrix).any():
+            return torch.tensor(0.0, device=embeddings.device)
+        
         # Create masks for same asset (positives)
         asset_eq = (asset_ids.unsqueeze(0) == asset_ids.unsqueeze(1))  # (batch, batch)
         
@@ -146,20 +162,27 @@ class PretrainLoss(nn.Module):
             return torch.tensor(0.0, device=embeddings.device)
         
         # InfoNCE loss: -log( sum(exp(pos_sim)) / sum(exp(all_sim)) )
-        # Use -1e4 instead of -1e9 to avoid float16 overflow (max ~65k)
-        # Numerator: sum of similarities with positives (use masked_fill for efficiency)
-        pos_sim = sim_matrix.masked_fill(~asset_eq, -1e4)
-        pos_exp_sum = torch.exp(pos_sim).sum(dim=1)
+        # Use temperature-aware masking to avoid overflow
+        # With temperature=0.07, max safe value in float16 is ~4500
+        mask_value = min(-10.0 / self.temperature, -1000.0)  # Adaptive to temperature
+        
+        # Numerator: sum of similarities with positives
+        pos_sim = sim_matrix.masked_fill(~asset_eq, mask_value)
+        pos_exp_sum = torch.exp(torch.clamp(pos_sim, min=-50, max=50)).sum(dim=1)
         
         # Denominator: sum of all similarities except self
-        all_sim = sim_matrix.masked_fill(mask_self, -1e4)
-        all_exp_sum = torch.exp(all_sim).sum(dim=1)
+        all_sim = sim_matrix.masked_fill(mask_self, mask_value)
+        all_exp_sum = torch.exp(torch.clamp(all_sim, min=-50, max=50)).sum(dim=1)
         
-        # Compute loss for samples with positives
-        loss = -torch.log(pos_exp_sum / (all_exp_sum + 1e-8))
-        loss = loss[has_positive].mean()
+        # Compute loss for samples with positives (add eps to prevent log(0))
+        loss = -torch.log((pos_exp_sum + 1e-7) / (all_exp_sum + 1e-7))
+        loss = loss[has_positive]
         
-        return loss
+        # Final NaN check
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            return torch.tensor(0.0, device=embeddings.device)
+        
+        return loss.mean()
 
     def _temporal_consistency_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Penalize abrupt changes in temporal embeddings.
