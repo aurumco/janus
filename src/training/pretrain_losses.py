@@ -146,12 +146,13 @@ class PretrainLoss(nn.Module):
             return torch.tensor(0.0, device=embeddings.device)
         
         # InfoNCE loss: -log( sum(exp(pos_sim)) / sum(exp(all_sim)) )
+        # Use -1e4 instead of -1e9 to avoid float16 overflow (max ~65k)
         # Numerator: sum of similarities with positives (use masked_fill for efficiency)
-        pos_sim = sim_matrix.masked_fill(~asset_eq, -1e9)
+        pos_sim = sim_matrix.masked_fill(~asset_eq, -1e4)
         pos_exp_sum = torch.exp(pos_sim).sum(dim=1)
         
         # Denominator: sum of all similarities except self
-        all_sim = sim_matrix.masked_fill(mask_self, -1e9)
+        all_sim = sim_matrix.masked_fill(mask_self, -1e4)
         all_exp_sum = torch.exp(all_sim).sum(dim=1)
         
         # Compute loss for samples with positives

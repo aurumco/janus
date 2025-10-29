@@ -128,6 +128,5 @@ class PretrainWindowDataset(Dataset):
             if np.random.random() < 0.15:
                 num_pos = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
                 positions = np.random.choice(self.sequence_length, size=num_pos, replace=False)
-                for pos in positions:
-                    mask_binary[pos] = True
+                mask_binary[positions] = True
         return mask_binary
