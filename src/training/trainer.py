@@ -183,6 +183,10 @@ class Trainer:
         Returns:
             True if checkpoint was loaded successfully, False otherwise.
         """
+        # Normalize to Path if a string was provided
+        if isinstance(checkpoint_path, str):
+            checkpoint_path = Path(checkpoint_path)
+
         if checkpoint_path is None and self.checkpoint_dir:
             # Try interrupted first, then latest
             for name in ['checkpoint_interrupted.pt', 'checkpoint_latest.pt']:
@@ -195,7 +199,7 @@ class Trainer:
             return False
         
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(str(checkpoint_path), map_location=self.device)
             
             actual_model = self.model.module if hasattr(self.model, 'module') else self.model
             actual_model.load_state_dict(checkpoint['model_state_dict'])

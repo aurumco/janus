@@ -67,8 +67,6 @@ class PretrainLoss(nn.Module):
 
         batch_size = reconstructed_sequence.size(0)
 
-        # Vectorized masked reconstruction loss
-        # loss per element (batch, seq, feat)
         if isinstance(self.reconstruction_loss_fn, nn.HuberLoss):
             per_elem = torch.nn.functional.smooth_l1_loss(
                 reconstructed_sequence, original_sequence, reduction="none", beta=self.reconstruction_loss_fn.delta
@@ -76,21 +74,18 @@ class PretrainLoss(nn.Module):
         else:
             per_elem = (reconstructed_sequence - original_sequence) ** 2
 
-        # expand mask to feature dimension
         mask_exp = mask_binary.unsqueeze(-1).expand_as(per_elem)
         masked_losses = per_elem[mask_exp]
         if masked_losses.numel() == 0:
             masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
         else:
             masked_price_loss = masked_losses.mean()
-            # Check for NaN
             if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
                 masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
 
         volatility_loss = self.volatility_loss_fn(
             predicted_volatility, volatility_target
         )
-        # Check for NaN in volatility loss
         if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
             volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
 
@@ -108,7 +103,6 @@ class PretrainLoss(nn.Module):
             contrastive_loss = self._contrastive_loss(
                 reconstructed_sequence, batch["asset_id"]
             )
-            # Check for NaN in contrastive loss
             if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
                 contrastive_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
             total_loss = total_loss + self.contrastive_weight * contrastive_loss
@@ -116,7 +110,6 @@ class PretrainLoss(nn.Module):
 
         if self.temporal_consistency_weight > 0:
             temporal_loss = self._temporal_consistency_loss(reconstructed_sequence)
-            # Check for NaN in temporal loss
             if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
                 temporal_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
             total_loss = total_loss + self.temporal_consistency_weight * temporal_loss
@@ -128,7 +121,7 @@ class PretrainLoss(nn.Module):
     def _contrastive_loss(
         self, embeddings: torch.Tensor, asset_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Fully vectorized contrastive loss using InfoNCE (no Python loops).
+        """Fully vectorized contrastive loss using InfoNCE.
 
         Args:
             embeddings: Sequence representations (batch, seq_len, features).
