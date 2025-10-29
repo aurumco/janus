@@ -388,6 +388,16 @@ class DataLoaderFactory:
                 drop_last=False,
             )
 
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=workers,
+                pin_memory=pin_mem,
+                persistent_workers=False,
+                prefetch_factor=1 if workers > 0 else None,
+            )
+
             test_loader = DataLoader(
                 test_dataset,
                 batch_size=self.batch_size,
