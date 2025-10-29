@@ -384,7 +384,7 @@ class DataLoaderFactory:
                 num_workers=workers,
                 pin_memory=pin_mem,
                 persistent_workers=workers > 0,
-                prefetch_factor=2 if workers > 0 else None,
+                prefetch_factor=4 if workers > 0 else None,
                 drop_last=False,
             )
 
