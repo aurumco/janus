@@ -22,32 +22,33 @@ class MetricsVisualizer:
         history: Dict[str, List[float]],
         output_dir: Path,
     ) -> None:
-        """Plot training and validation loss curves.
-
-        Args:
-            history: Training history dictionary.
-            output_dir: Directory to save plots.
-        """
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if not history.get('train_loss') or not history.get('val_loss'):
+            return
+
         epochs = range(1, len(history['train_loss']) + 1)
+        marker_style = 'o' if len(epochs) <= 10 else None
+        marker_size = 8 if len(epochs) <= 10 else 4
 
         fig, axes = plt.subplots(1, 2, figsize=(15, 5))
 
-        # Loss curves
-        axes[0].plot(epochs, history['train_loss'], 'b-', label='Training Loss', linewidth=2)
-        axes[0].plot(epochs, history['val_loss'], 'r-', label='Validation Loss', linewidth=2)
+        axes[0].plot(epochs, history['train_loss'], 'b-', label='Training Loss', 
+                     linewidth=2, marker=marker_style, markersize=marker_size)
+        axes[0].plot(epochs, history['val_loss'], 'r-', label='Validation Loss', 
+                     linewidth=2, marker=marker_style, markersize=marker_size)
         axes[0].set_title('Loss Curves', fontsize=14, fontweight='bold')
         axes[0].set_xlabel('Epoch', fontsize=12)
         axes[0].set_ylabel('Loss', fontsize=12)
         axes[0].legend(fontsize=10)
         axes[0].grid(True, alpha=0.3)
 
-        # Learning rate schedule
-        axes[1].plot(epochs, history['learning_rate'], 'g-', linewidth=2)
+        axes[1].plot(epochs, history['learning_rate'], 'g-', linewidth=2, 
+                     marker=marker_style, markersize=marker_size)
         axes[1].set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
         axes[1].set_xlabel('Epoch', fontsize=12)
         axes[1].set_ylabel('Learning Rate', fontsize=12)
+        axes[1].set_yscale('log')
         axes[1].grid(True, alpha=0.3)
 
         plt.tight_layout()

@@ -109,78 +109,51 @@ class DataLoaderFactory:
         """
         start_time = time.time()
         def mem_info(prefix: str) -> None:
-            if psutil:
+            if psutil and self.verbose:
                 mi = psutil.Process().memory_info()
-                print(f"{prefix} | RSS={mi.rss/1e9:.2f} GB, VMS={mi.vms/1e9:.2f} GB")
+                if logger:
+                    logger.info(f"{prefix}: RSS={mi.rss/1e9:.2f}GB", indent=2)
 
         try:
-            if self.verbose:
-                if logger:
-                    logger.info("- Reading parquet file...")
-                else:
-                    print("- Reading parquet file...")
-                mem_info("  Before read")
+            if self.verbose and logger:
+                logger.info("Reading parquet file", indent=1)
             data = None
             gdata = None
             if self.use_gpu_preprocess:
                 try:
                     import cudf  # type: ignore
                     gdata = str(self.data_path)
-                    if self.verbose:
-                        if logger:
-                            logger.info("  Using cuDF GPU processing (chunked read)")
-                        else:
-                            print("  Using cuDF GPU processing (chunked read)")
+                    if self.verbose and logger:
+                        logger.info("Using cuDF GPU processing", indent=2)
                 except Exception as ge:
-                    if self.verbose:
-                        msg = f"  GPU read failed ({type(ge).__name__}: {ge}), falling back to CPU"
-                        if logger:
-                            logger.warning(msg)
-                        else:
-                            print(msg)
+                    if self.verbose and logger:
+                        logger.warning(f"GPU read failed, using CPU: {type(ge).__name__}", indent=2)
                     gdata = None
             if gdata is None:
                 data = pd.read_parquet(self.data_path, engine="pyarrow")
-                if self.verbose:
-                    if logger:
-                        logger.info(f"  Loaded DataFrame: shape={data.shape}")
-                    else:
-                        print(f"  Loaded DataFrame: shape={data.shape}")
-                    mem_info("  After read")
+                if self.verbose and logger:
+                    logger.info(f"Loaded {data.shape[0]} rows", indent=2)
 
-            if self.verbose:
-                if logger:
-                    logger.info("- Processing sequences (vectorized sliding windows)...")
-                else:
-                    print("- Processing sequences (vectorized sliding windows)...")
+            if self.verbose and logger:
+                logger.info("Processing sequences", indent=1)
             if gdata is not None and self.use_gpu_preprocess:
                 features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
-                if self.verbose:
-                    if logger:
-                        logger.info(f"  Base features: {n_timesteps} timesteps x {n_features} features")
-                    else:
-                        print(f"  Base features: {n_timesteps} timesteps x {n_features} features")
-                    mem_info("  After GPU process")
+                if self.verbose and logger:
+                    logger.info(f"Features: {n_timesteps} × {n_features}", indent=2)
+                    mem_info("After GPU process")
                 X = None
                 y = None
             else:
                 X, y = self.processing_strategy.process(data)
-                if self.verbose:
-                    if logger:
-                        logger.info(f"  Sequences: X={X.shape}, y={y.shape}")
-                    else:
-                        print(f"  Sequences: X={X.shape}, y={y.shape}")
-                    mem_info("  After process")
+                if self.verbose and logger:
+                    logger.info(f"Sequences: {X.shape[0]} samples", indent=2)
                 features_path = None
                 asset_ids_path = None
                 n_timesteps = None
                 n_features = None
 
-            if self.verbose:
-                if logger:
-                    logger.info("- Splitting train/val/test...")
-                else:
-                    print("- Splitting train/val/test...")
+            if self.verbose and logger:
+                logger.info("Splitting train/val/test", indent=1)
             if X is not None:
                 n_samples = len(X)
             else:
@@ -216,18 +189,12 @@ class DataLoaderFactory:
             else:
                 asset_ids_train = asset_ids_val = asset_ids_test = None
 
-            if self.verbose:
-                if logger:
-                    logger.info("- Building PyTorch datasets...")
-                else:
-                    print("- Building PyTorch datasets...")
+            if self.verbose and logger:
+                logger.info("Building datasets", indent=1)
             if self.mode == "pretrain":
                 if self.use_streaming_fallback:
-                    if self.verbose:
-                        if logger:
-                            logger.info("  Using streaming fallback mode (direct parquet read)")
-                        else:
-                            print("  Using streaming fallback mode (direct parquet read)")
+                    if self.verbose and logger:
+                        logger.info("Using streaming mode", indent=2)
                     full_dataset = MemoryEfficientPretrainDataset(
                         parquet_path=str(self.data_path),
                         sequence_length=self.sequence_length,
@@ -347,11 +314,8 @@ class DataLoaderFactory:
                     val_dataset = FineTuneDataset(X_val, y_val)
                     test_dataset = FineTuneDataset(X_test, y_test)
 
-            if self.verbose:
-                if logger:
-                    logger.info("- Creating DataLoader objects...")
-                else:
-                    print("- Creating DataLoader objects...")
+            if self.verbose and logger:
+                logger.info("Creating DataLoaders", indent=1)
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
             # CRITICAL FIX: Only disable workers for actual streaming fallback
             # Memmap is designed for multi-process shared memory access and works great with workers
@@ -368,11 +332,7 @@ class DataLoaderFactory:
                     dataset_type = "PretrainDataset"
                 
                 if logger:
-                    logger.info(f"  Backend: {backend}")
-                    logger.info(f"  Dataset Type: {dataset_type}")
-                else:
-                    print(f"  Backend: {backend}")
-                    print(f"  Dataset Type: {dataset_type}")
+                    logger.info(f"Backend: {backend}", indent=2)
 
             # Enable multiprocessing for memmap - it's designed for shared memory access
             workers = 0 if streaming_active else self.num_workers
@@ -412,10 +372,6 @@ class DataLoaderFactory:
                 prefetch_factor=3 if workers > 0 else None,
             )
 
-            elapsed = time.time() - start_time
-            print(f"✓ Data loaders ready in {elapsed:.2f}s")
-            
-            # Aggressive memory cleanup
             if X is not None:
                 del X, y, X_train, y_train, X_val, y_val, X_test, y_test
             if 'data' in locals():
@@ -423,8 +379,6 @@ class DataLoaderFactory:
             if 'gdata' in locals():
                 del gdata
             gc.collect()
-            
-            mem_info("  Final")
 
             return {
                 "train": train_loader,
@@ -432,9 +386,8 @@ class DataLoaderFactory:
                 "test": test_loader,
             }
         except Exception as e:
-            print("! Error while creating data loaders")
-            print(f"  Exception: {type(e).__name__}: {e}")
-            mem_info("  On error")
+            if logger:
+                logger.error(f"Data loading failed: {type(e).__name__}: {e}", indent=1)
             gc.collect()
             raise
 

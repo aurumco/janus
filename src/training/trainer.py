@@ -199,7 +199,7 @@ class Trainer:
             return False
         
         try:
-            checkpoint = torch.load(str(checkpoint_path), map_location=self.device)
+            checkpoint = torch.load(str(checkpoint_path), map_location=self.device, weights_only=False)
             
             actual_model = self.model.module if hasattr(self.model, 'module') else self.model
             actual_model.load_state_dict(checkpoint['model_state_dict'])

@@ -12,6 +12,11 @@ try:
 except ImportError:
     tqdm = lambda x, **kwargs: x
 
+try:
+    from src.utils.logger import logger
+except:
+    from ..utils.logger import logger
+
 
 class EnhancedPretrainEvaluator:
     """Enhanced evaluator for self-supervised pre-training tasks."""
@@ -47,7 +52,7 @@ class EnhancedPretrainEvaluator:
         all_pred_vols: List[torch.Tensor] = []
         all_true_vols: List[torch.Tensor] = []
 
-        print(f"  Evaluating on up to {max_batches} batches...")
+        logger.info(f"Evaluating on {min(len(dataloader), max_batches)} batches", indent=1)
         
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=min(len(dataloader), max_batches))):
@@ -75,7 +80,11 @@ class EnhancedPretrainEvaluator:
                 else:
                     recon_loss_batch = 0.0
 
-                vol_loss_batch = torch.mean((pred_vol - vol_target) ** 2).item()
+                vol_diff = (pred_vol - vol_target) ** 2
+                if torch.isnan(vol_diff).any() or torch.isinf(vol_diff).any():
+                    vol_loss_batch = 0.0
+                else:
+                    vol_loss_batch = torch.mean(vol_diff).item()
 
                 total_recon_loss += recon_loss_batch * batch_size
                 total_vol_loss += vol_loss_batch * batch_size
@@ -184,26 +193,21 @@ class EnhancedPretrainEvaluator:
         return total_variance / max(count, 1)
 
     def print_metrics(self, metrics: Dict[str, float]) -> None:
-        """Print evaluation metrics in a formatted way.
+        logger.blank_line()
+        logger.info("Reconstruction Performance:", indent=1)
+        logger.metric("Masked Reconstruction MSE", f"{metrics.get('masked_reconstruction_mse', 0):.6f}", indent=2)
 
-        Args:
-            metrics: Dictionary of metric names and values.
-        """
-        print("\n" + "=" * 70)
-        print("SSL Pre-training Evaluation Metrics (Enhanced)")
-        print("=" * 70)
+        logger.blank_line()
+        logger.info("Volatility Prediction:", indent=1)
+        vol_mse = metrics.get('volatility_mse', 0)
+        vol_mse_str = "nan" if (vol_mse != vol_mse or vol_mse == float('inf')) else f"{vol_mse:.6f}"
+        logger.metric("Volatility MSE", vol_mse_str, indent=2)
+        logger.metric("Volatility Correlation", f"{metrics.get('volatility_correlation', 0):.4f}", indent=2)
 
-        print("\n📊 Reconstruction Performance:")
-        print(f"  Masked Reconstruction MSE    : {metrics.get('masked_reconstruction_mse', 0):.6f}")
-
-        print("\n📈 Volatility Prediction:")
-        print(f"  Volatility MSE               : {metrics.get('volatility_mse', 0):.6f}")
-        print(f"  Volatility Correlation       : {metrics.get('volatility_correlation', 0):.4f}")
-
-        print("\n🎯 Embedding Quality:")
-        print(f"  Silhouette Score             : {metrics.get('embedding_silhouette_score', 0):.4f}")
-        print(f"  Temporal Consistency         : {metrics.get('temporal_consistency', 0):.6f}")
-
-        print("=" * 70 + "\n")
+        logger.blank_line()
+        logger.info("Embedding Quality:", indent=1)
+        logger.metric("Silhouette Score", f"{metrics.get('embedding_silhouette_score', 0):.4f}", indent=2)
+        logger.metric("Temporal Consistency", f"{metrics.get('temporal_consistency', 0):.6f}", indent=2)
+        logger.blank_line()
 
 PretrainEvaluator = EnhancedPretrainEvaluator
