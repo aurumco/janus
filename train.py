@@ -336,8 +336,7 @@ def main() -> None:
     
     model = model.to(device)
 
-    # Try to compile model for speed (but not with DataParallel due to compatibility issues)
-    if not hasattr(model, 'module'):  # Only compile if not DataParallel
+    if not hasattr(model, 'module'):
         try:
             model = torch.compile(model, mode='reduce-overhead')
             logger.success("Model compiled successfully with torch.compile", indent=1)

@@ -245,20 +245,18 @@ class Trainer:
         for batch_idx, batch_data in enumerate(progress):
             # Handle both tuple (inputs, targets) and dict formats
             if isinstance(batch_data, dict):
-                inputs = batch_data["input_sequence"].to(self.device, non_blocking=True)
-                targets = batch_data.get("targets", batch_data.get("original_sequence")).to(self.device, non_blocking=True)
-                asset_id = batch_data.get("asset_id")
-                if asset_id is not None:
-                    asset_id = asset_id.to(self.device, non_blocking=True)
-                batch = {
-                    "targets": targets,
-                    "asset_id": asset_id,
-                }
+                inputs = batch_data["input_sequence"]
+                batch = batch_data
             else:
                 inputs, targets = batch_data
-                inputs = inputs.to(self.device, non_blocking=True)
-                targets = targets.to(self.device, non_blocking=True)
                 batch = {"targets": targets}
+            # Move data to device
+            if isinstance(batch, dict):
+                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
+            else:
+                inputs = inputs.to(self.device)
+                batch["targets"] = batch["targets"].to(self.device)
 
             if self.use_amp:
                 dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -301,8 +299,7 @@ class Trainer:
                     loss = loss_output
 
             total_loss += loss.item()
-            # Reduce cleanup frequency for better performance
-            if batch_idx > 0 and batch_idx % 500 == 0:
+            if batch_idx > 0 and batch_idx % 1000 == 0:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -310,13 +307,11 @@ class Trainer:
         avg_loss = total_loss / len(train_loader)
         progress.close()
         
-        # Cleanup after epoch
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
-        # Add averaged loss components
         for key, val in loss_components.items():
             metrics[key] = val / len(train_loader)
 
@@ -346,7 +341,6 @@ class Trainer:
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}]'
             )
             for batch_idx, batch_data in enumerate(vprogress):
-                # Handle both tuple and dict formats
                 if isinstance(batch_data, dict):
                     inputs = batch_data["input_sequence"]
                     batch = batch_data
@@ -354,7 +348,6 @@ class Trainer:
                     inputs, targets = batch_data
                     batch = {"targets": targets}
 
-                # Move data to device
                 if isinstance(batch, dict):
                     batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                     inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
@@ -365,7 +358,6 @@ class Trainer:
                 outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
-                # Handle dictionary loss output
                 if isinstance(loss_output, dict):
                     loss = loss_output["total_loss"]
                     for key, val in loss_output.items():

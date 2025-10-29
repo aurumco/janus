@@ -70,23 +70,19 @@ class PretrainWindowDataset(Dataset):
         i = self.start_index + (idx * self.stride)
         end = i + self.sequence_length
 
-        # Copy memmap slice to make it writable (required by PyTorch)
-        window_data = np.array(self.features_mm[i:end, :], copy=True)
-        original_sequence = torch.from_numpy(window_data)
+        # Direct conversion from memmap slice to tensor (no intermediate copy)
+        original_sequence = torch.from_numpy(self.features_mm[i:end, :].copy())
         
-        asset_id = torch.tensor(self.asset_ids_mm[end - 1], dtype=torch.long)
+        asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)
 
         mask_binary = self._generate_smart_mask(original_sequence)
-        # Expand mask to match sequence dimensions [seq_len] -> [seq_len, features]
-        mask_expanded = mask_binary.unsqueeze(1).expand(-1, self.n_features)
-        masked_sequence = original_sequence.masked_fill(mask_expanded, 0.0)
+        masked_sequence = original_sequence.clone()
+        masked_sequence[mask_binary] = 0.0
 
-        # Pre-compute volatility range
-        future_end_idx = end + self.volatility_lookahead
-        if future_end_idx <= self.n_timesteps and (future_end_idx - end) > 1:
-            prices = self.features_mm[end:future_end_idx, self.price_column_idx]
-            # Use more efficient volatility calculation
-            log_returns = np.log(np.diff(prices) + 1e-8)
+        future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
+        if future_end_idx > end and (future_end_idx - end) > 1:
+            prices_slice = self.features_mm[end:future_end_idx, self.price_column_idx]
+            log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
             volatility = torch.tensor(float(np.std(log_returns)), dtype=torch.float32)
         else:
             volatility = torch.tensor(0.0, dtype=torch.float32)
@@ -100,20 +96,17 @@ class PretrainWindowDataset(Dataset):
         }
 
     def _generate_smart_mask(self, sequence: torch.Tensor) -> torch.Tensor:
-        # Use torch operations for better performance
-        use_smart = torch.rand(1) < self.smart_masking_prob
-        use_cross = torch.rand(1) < self.cross_asset_masking_prob
-        
-        mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool, device=sequence.device)
-        
+        mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
+        use_smart = np.random.random() < self.smart_masking_prob
+        use_cross = np.random.random() < self.cross_asset_masking_prob
+
         if use_smart:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
         if use_cross:
             mask_binary = self._cross_asset_mask(sequence, mask_binary)
         if not (use_smart or use_cross):
             num_mask = max(1, int(self.sequence_length * self.masking_ratio))
-            # Use torch.randperm for faster random selection
-            pos = torch.randperm(self.sequence_length, device=sequence.device)[:num_mask]
+            pos = np.random.choice(self.sequence_length, size=num_mask, replace=False)
             mask_binary[pos] = True
         return mask_binary
 

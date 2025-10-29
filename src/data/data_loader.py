@@ -353,16 +353,18 @@ class DataLoaderFactory:
                 else:
                     print("- Creating DataLoader objects...")
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
-            streaming_active = self.use_streaming_fallback or use_streaming_memmap
+            # CRITICAL FIX: Only disable workers for actual streaming fallback
+            # Memmap is designed for multi-process shared memory access and works great with workers
+            streaming_active = self.use_streaming_fallback
             if self.verbose:
                 if self.use_streaming_fallback:
-                    backend = "Streaming Parquet (MemoryEfficient*) - SLOW"
+                    backend = "Streaming Parquet"
                     dataset_type = "MemoryEfficientPretrainDataset"
                 elif use_streaming_memmap:
-                    backend = "Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT"
+                    backend = "Memmap Windows (PretrainWindowDataset)"
                     dataset_type = "PretrainWindowDataset"
                 else:
-                    backend = "In-Memory Dataset (FAST but HIGH RAM)"
+                    backend = "In-Memory Dataset"
                     dataset_type = "PretrainDataset"
                 
                 if logger:
@@ -372,10 +374,12 @@ class DataLoaderFactory:
                     print(f"  Backend: {backend}")
                     print(f"  Dataset Type: {dataset_type}")
 
+            # Enable multiprocessing for memmap - it's designed for shared memory access
             workers = 0 if streaming_active else self.num_workers
+            # Enable pin_memory for faster CPU->GPU transfer when using CUDA
             pin_mem = self.num_workers > 0 and not streaming_active
-            # Disable shuffle for memmap to avoid random access overhead
-            do_shuffle = self.shuffle_train and not use_streaming_memmap
+            # Enable shuffling for memmap - DataLoader handles it via randomized indices
+            do_shuffle = self.shuffle_train
             
             train_loader = DataLoader(
                 train_dataset,
@@ -395,7 +399,7 @@ class DataLoaderFactory:
                 num_workers=workers,
                 pin_memory=pin_mem,
                 persistent_workers=False,
-                prefetch_factor=1 if workers > 0 else None,
+                prefetch_factor=3 if workers > 0 else None,
             )
 
             test_loader = DataLoader(
@@ -405,7 +409,7 @@ class DataLoaderFactory:
                 num_workers=workers,
                 pin_memory=pin_mem,
                 persistent_workers=False,
-                prefetch_factor=1 if workers > 0 else None,
+                prefetch_factor=3 if workers > 0 else None,
             )
 
             elapsed = time.time() - start_time
