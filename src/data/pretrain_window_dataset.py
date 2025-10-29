@@ -70,15 +70,16 @@ class PretrainWindowDataset(Dataset):
         i = self.start_index + (idx * self.stride)
         end = i + self.sequence_length
 
-        # Use from_numpy directly on memmap slice (faster than copy)
-        window_data = self.features_mm[i:end, :]
+        # Copy memmap slice to make it writable (required by PyTorch)
+        window_data = np.array(self.features_mm[i:end, :], copy=True)
         original_sequence = torch.from_numpy(window_data)
         
         asset_id = torch.tensor(self.asset_ids_mm[end - 1], dtype=torch.long)
 
         mask_binary = self._generate_smart_mask(original_sequence)
-        # Use masked_fill instead of clone for efficiency
-        masked_sequence = original_sequence.masked_fill(mask_binary, 0.0)
+        # Expand mask to match sequence dimensions [seq_len] -> [seq_len, features]
+        mask_expanded = mask_binary.unsqueeze(1).expand(-1, self.n_features)
+        masked_sequence = original_sequence.masked_fill(mask_expanded, 0.0)
 
         # Pre-compute volatility range
         future_end_idx = end + self.volatility_lookahead
