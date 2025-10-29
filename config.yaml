@@ -24,7 +24,7 @@ pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
     sequence_length: 72
-    batch_size: 256
+    batch_size: 128
     num_features: 16
     stride: 4
     use_gpu_preprocess: true
@@ -35,7 +35,7 @@ pretrain:
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
-    num_workers: 4
+    num_workers: 2
     shuffle_train: true
     use_streaming_fallback: false
   

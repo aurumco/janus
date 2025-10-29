@@ -6,7 +6,6 @@ import gc
 import time
 
 import pandas as pd
-import torch
 from torch.utils.data import DataLoader
 
 try:
@@ -226,9 +225,9 @@ class DataLoaderFactory:
                 if self.use_streaming_fallback:
                     if self.verbose:
                         if logger:
-                            logger.info("  Dataset Backend: MemoryEfficientPretrainDataset (streaming parquet)")
+                            logger.info("  Using streaming fallback mode (direct parquet read)")
                         else:
-                            print("  Dataset Backend: MemoryEfficientPretrainDataset (streaming parquet)")
+                            print("  Using streaming fallback mode (direct parquet read)")
                     full_dataset = MemoryEfficientPretrainDataset(
                         parquet_path=str(self.data_path),
                         sequence_length=self.sequence_length,
@@ -245,11 +244,6 @@ class DataLoaderFactory:
                     val_dataset = Subset(full_dataset, range(train_end, val_end))
                     test_dataset = Subset(full_dataset, range(val_end, n_samples))
                 elif features_path is not None:
-                    if self.verbose:
-                        if logger:
-                            logger.info("  Dataset Backend: PretrainWindowDataset (memmap windows)")
-                        else:
-                            print("  Dataset Backend: PretrainWindowDataset (memmap windows)")
                     # Local import to avoid environment-specific import errors
                     try:
                         from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
@@ -303,11 +297,6 @@ class DataLoaderFactory:
                         stride=self.stride,
                     )
                 else:
-                    if self.verbose:
-                        if logger:
-                            logger.info("  Dataset Backend: PretrainDataset (in-memory)")
-                        else:
-                            print("  Dataset Backend: PretrainDataset (in-memory)")
                     train_dataset = PretrainDataset(
                         X_train,
                         asset_ids=asset_ids_train,
@@ -367,19 +356,24 @@ class DataLoaderFactory:
             streaming_active = self.use_streaming_fallback or use_streaming_memmap
             if self.verbose:
                 if self.use_streaming_fallback:
-                    msg = "  Backend: Streaming Parquet (MemoryEfficient*) - SLOW"
+                    backend = "Streaming Parquet (MemoryEfficient*) - SLOW"
+                    dataset_type = "MemoryEfficientPretrainDataset"
                 elif use_streaming_memmap:
-                    msg = "  Backend: Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT"
+                    backend = "Memmap Windows (PretrainWindowDataset) - MEMORY EFFICIENT"
+                    dataset_type = "PretrainWindowDataset"
                 else:
-                    msg = "  Backend: In-Memory Dataset (FAST but HIGH RAM)"
+                    backend = "In-Memory Dataset (FAST but HIGH RAM)"
+                    dataset_type = "PretrainDataset"
+                
                 if logger:
-                    logger.info(msg)
+                    logger.info(f"  Backend: {backend}")
+                    logger.info(f"  Dataset Type: {dataset_type}")
                 else:
-                    print(msg)
+                    print(f"  Backend: {backend}")
+                    print(f"  Dataset Type: {dataset_type}")
 
             workers = 0 if streaming_active else self.num_workers
-            # Enable pin_memory when using workers for faster CPU->GPU transfer
-            pin_mem = (workers > 0) and torch.cuda.is_available()
+            pin_mem = self.num_workers > 0 and not streaming_active
             # Disable shuffle for memmap to avoid random access overhead
             do_shuffle = self.shuffle_train and not use_streaming_memmap
             
@@ -389,18 +383,9 @@ class DataLoaderFactory:
                 shuffle=do_shuffle,
                 num_workers=workers,
                 pin_memory=pin_mem,
-                persistent_workers=(workers > 0),
+                persistent_workers=workers > 0,
                 prefetch_factor=2 if workers > 0 else None,
-            )
-
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=workers,
-                pin_memory=pin_mem,
-                persistent_workers=False,
-                prefetch_factor=1 if workers > 0 else None,
+                drop_last=False,
             )
 
             test_loader = DataLoader(

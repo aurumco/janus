@@ -335,13 +335,16 @@ def main() -> None:
         model = nn.DataParallel(model)
     
     model = model.to(device)
-    
-    # Optimization: Compile model for significant speedup (PyTorch 2.0+)
-    try:
-        model = torch.compile(model, mode='reduce-overhead')
-        logger.success("Model compiled with torch.compile (20-40% speedup expected)", indent=1)
-    except Exception as e:
-        logger.warning(f"torch.compile not available: {e}", indent=1)
+
+    # Try to compile model for speed (but not with DataParallel due to compatibility issues)
+    if not hasattr(model, 'module'):  # Only compile if not DataParallel
+        try:
+            model = torch.compile(model, mode='reduce-overhead')
+            logger.success("Model compiled successfully with torch.compile", indent=1)
+        except Exception as e:
+            logger.warning(f"torch.compile failed: {e}", indent=1)
+    else:
+        logger.info("Skipping torch.compile due to DataParallel incompatibility", indent=1)
 
     actual_model = model.module if hasattr(model, 'module') else model
     params = actual_model.get_num_parameters()
