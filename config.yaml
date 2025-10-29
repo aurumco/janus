@@ -35,7 +35,7 @@ pretrain:
     train_ratio: 0.85
     val_ratio: 0.15
     test_ratio: 0.0
-    num_workers: 6
+    num_workers: 4
     shuffle_train: true
     use_streaming_fallback: false
   
@@ -50,7 +50,7 @@ pretrain:
     asset_embedding_dim: 24
     reconstruction_head_dim: 16
     volatility_head_dim: 1
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
   
   training:
     epochs: 10

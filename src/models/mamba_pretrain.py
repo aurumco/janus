@@ -99,7 +99,7 @@ class MambaPretrainModel(nn.Module):
 
         if self.asset_embedding is not None and asset_ids is not None:
             asset_emb = self.asset_embedding(asset_ids)
-            asset_emb = asset_emb.unsqueeze(1).repeat(1, seq_len, 1)
+            asset_emb = asset_emb.unsqueeze(1).expand(-1, seq_len, -1)
             x = torch.cat([x, asset_emb], dim=-1)
 
         x = self.input_projection(x)
@@ -107,7 +107,6 @@ class MambaPretrainModel(nn.Module):
 
         for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
             if self.training and self.use_gradient_checkpointing:
-                # Use proper function instead of lambda to avoid closure issues
                 def checkpoint_fn(x_input, layer, norm):
                     return layer(norm(x_input))
                 x = x + torch.utils.checkpoint.checkpoint(

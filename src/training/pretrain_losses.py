@@ -1,6 +1,5 @@
 """Custom loss functions for SSL pre-training with multi-asset awareness."""
 
-import random
 from typing import Dict
 
 import torch
@@ -117,7 +116,7 @@ class PretrainLoss(nn.Module):
     def _contrastive_loss(
         self, embeddings: torch.Tensor, asset_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Memory-efficient contrastive loss with sampled negatives (O(n) instead of O(n²)).
+        """Fully vectorized contrastive loss using InfoNCE (no Python loops).
 
         Args:
             embeddings: Sequence representations (batch, seq_len, features).
@@ -130,54 +129,36 @@ class PretrainLoss(nn.Module):
         pooled_normalized = F.normalize(pooled, p=2, dim=1)
         
         batch_size = pooled.size(0)
-        num_negatives = min(batch_size - 1, 8)
         
-        total_loss = 0.0
-        valid_samples = 0
+        # Compute similarity matrix: (batch, batch)
+        sim_matrix = (pooled_normalized @ pooled_normalized.T) / self.temperature
         
-        for i in range(batch_size):
-            anchor = pooled_normalized[i]
-            anchor_asset = asset_ids[i]
-            
-            positive_mask = (asset_ids == anchor_asset)
-            positive_indices = positive_mask.nonzero(as_tuple=True)[0]
-            positive_indices = positive_indices[positive_indices != i]
-            
-            if len(positive_indices) == 0:
-                continue
-            
-            pos_idx = positive_indices[0]
-            positive = pooled_normalized[pos_idx]
-            pos_sim = F.cosine_similarity(
-                anchor.unsqueeze(0), positive.unsqueeze(0)
-            ) / self.temperature
-            
-            negative_mask = (asset_ids != anchor_asset)
-            negative_indices = negative_mask.nonzero(as_tuple=True)[0]
-            
-            if len(negative_indices) == 0:
-                continue
-            
-            num_neg_samples = min(num_negatives, len(negative_indices))
-            neg_indices = random.sample(
-                negative_indices.tolist(), num_neg_samples
-            )
-            negatives = pooled_normalized[neg_indices]
-            neg_sims = F.cosine_similarity(
-                anchor.unsqueeze(0), negatives
-            ) / self.temperature
-            
-            pos_exp = torch.exp(pos_sim)
-            neg_exp = torch.exp(neg_sims).sum()
-            
-            sample_loss = -torch.log(pos_exp / (pos_exp + neg_exp + 1e-8))
-            total_loss += sample_loss
-            valid_samples += 1
+        # Create masks for same asset (positives)
+        asset_eq = (asset_ids.unsqueeze(0) == asset_ids.unsqueeze(1))  # (batch, batch)
         
-        if valid_samples == 0:
+        # Remove self-similarity
+        mask_self = torch.eye(batch_size, device=embeddings.device, dtype=torch.bool)
+        asset_eq = asset_eq & ~mask_self
+        
+        # Check which samples have at least one positive
+        has_positive = asset_eq.any(dim=1)
+        if not has_positive.any():
             return torch.tensor(0.0, device=embeddings.device)
         
-        return total_loss / valid_samples
+        # InfoNCE loss: -log( sum(exp(pos_sim)) / sum(exp(all_sim)) )
+        # Numerator: sum of similarities with positives (use masked_fill for efficiency)
+        pos_sim = sim_matrix.masked_fill(~asset_eq, -1e9)
+        pos_exp_sum = torch.exp(pos_sim).sum(dim=1)
+        
+        # Denominator: sum of all similarities except self
+        all_sim = sim_matrix.masked_fill(mask_self, -1e9)
+        all_exp_sum = torch.exp(all_sim).sum(dim=1)
+        
+        # Compute loss for samples with positives
+        loss = -torch.log(pos_exp_sum / (all_exp_sum + 1e-8))
+        loss = loss[has_positive].mean()
+        
+        return loss
 
     def _temporal_consistency_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Penalize abrupt changes in temporal embeddings.
