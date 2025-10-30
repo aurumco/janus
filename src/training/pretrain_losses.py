@@ -167,8 +167,12 @@ class PretrainLoss(nn.Module):
             mean_pool = sum_emb / count
             masked_embeddings = embeddings.masked_fill(~valid.unsqueeze(-1), float("-inf"))
             max_pool, _ = masked_embeddings.max(dim=1)
-            # If an entire sequence was masked, fallback max to mean
-            max_pool[torch.isinf(max_pool)] = mean_pool[torch.isinf(max_pool)]
+            # If an entire sequence was masked, fallback max to mean (AMP-safe)
+            max_pool = torch.where(
+                torch.isinf(max_pool),
+                mean_pool.to(max_pool.dtype),
+                max_pool,
+            )
         else:
             mean_pool = embeddings.mean(dim=1)
             max_pool, _ = embeddings.max(dim=1)
