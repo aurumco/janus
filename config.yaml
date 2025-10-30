@@ -26,7 +26,7 @@ pretrain:
     sequence_length: 72
     batch_size: 256
     num_features: 16
-    stride: 6
+    stride: 3
     use_gpu_preprocess: true
     masking_ratio: 0.15
     volatility_lookahead: 60
@@ -41,7 +41,7 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 320
+    d_model: 290
     d_state: 16
     d_conv: 4
     n_layers: 8
@@ -54,9 +54,9 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 2
+    epochs: 1
     learning_rate: 0.0001
-    weight_decay: 0.01
+    weight_decay: 0.02
     optimizer: "adamw"
     scheduler: "cosine"
     warmup_epochs: 5
@@ -107,7 +107,7 @@ finetune:
   
   model:
     name: "MambaFineTuned"
-    d_model: 320
+    d_model: 290
     d_state: 16
     d_conv: 4
     n_layers: 8
