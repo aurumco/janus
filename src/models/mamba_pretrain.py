@@ -22,8 +22,9 @@ class MambaPretrainModel(nn.Module):
         volatility_head_dim: int = 1,
         dropout: float = 0.1,
         num_assets: int = 15,
-        asset_embedding_dim: int = 16,
+        asset_embedding_dim: int = 32,
         use_gradient_checkpointing: bool = False,
+        enable_direction_head: bool = True,
     ) -> None:
         """Initialize Mamba pre-training model.
 
@@ -38,6 +39,8 @@ class MambaPretrainModel(nn.Module):
             dropout: Dropout probability.
             num_assets: Number of unique assets.
             asset_embedding_dim: Asset embedding dimension.
+            use_gradient_checkpointing: Whether to use gradient checkpointing.
+            enable_direction_head: Whether to enable direction prediction head.
         """
         super().__init__()
 
@@ -46,6 +49,7 @@ class MambaPretrainModel(nn.Module):
         self.num_assets = num_assets
         self.asset_embedding_dim = asset_embedding_dim
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.enable_direction_head = enable_direction_head
 
         if asset_embedding_dim > 0:
             self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
@@ -83,6 +87,14 @@ class MambaPretrainModel(nn.Module):
             nn.Softplus(),
         )
 
+        if self.enable_direction_head:
+            self.direction_head = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model // 2, 2),
+            )
+
     def forward(
         self, x: torch.Tensor, asset_ids: torch.Tensor = None
     ) -> Dict[str, torch.Tensor]:
@@ -93,7 +105,7 @@ class MambaPretrainModel(nn.Module):
             asset_ids: Asset ID tensor of shape (batch,) if using embeddings.
 
         Returns:
-            Dictionary with reconstructed sequence and predicted volatility.
+            Dictionary with reconstructed sequence, predicted volatility, and optionally direction.
         """
         batch_size, seq_len, _ = x.shape
 
@@ -120,10 +132,16 @@ class MambaPretrainModel(nn.Module):
         last_hidden = x[:, -1, :]
         predicted_volatility = self.volatility_head(last_hidden)
 
-        return {
+        output = {
             "reconstructed_sequence": reconstructed_sequence,
             "predicted_volatility": predicted_volatility,
         }
+
+        if self.enable_direction_head:
+            predicted_direction = self.direction_head(last_hidden)
+            output["predicted_direction"] = predicted_direction
+
+        return output
 
     def get_num_parameters(self) -> Dict[str, int]:
         """Get the number of parameters in the model.

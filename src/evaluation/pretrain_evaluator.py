@@ -51,6 +51,8 @@ class EnhancedPretrainEvaluator:
         all_asset_ids: List[torch.Tensor] = []
         all_pred_vols: List[torch.Tensor] = []
         all_true_vols: List[torch.Tensor] = []
+        all_pred_directions: List[torch.Tensor] = []
+        all_true_directions: List[torch.Tensor] = []
 
         logger.info(f"Evaluating on {min(len(dataloader), max_batches)} batches", indent=1)
         
@@ -67,6 +69,7 @@ class EnhancedPretrainEvaluator:
                 outputs = self.model(input_seq, asset_id)
                 recon_seq = outputs["reconstructed_sequence"]
                 pred_vol = outputs["predicted_volatility"]
+                pred_dir = outputs.get("predicted_direction", None)
 
                 batch_size = input_seq.size(0)
                 
@@ -94,11 +97,16 @@ class EnhancedPretrainEvaluator:
                 all_asset_ids.append(asset_id.cpu())
                 all_pred_vols.append(pred_vol.cpu())
                 all_true_vols.append(vol_target.cpu())
+                
+                if pred_dir is not None and "direction_target" in batch:
+                    all_pred_directions.append(pred_dir.argmax(dim=1).cpu())
+                    all_true_directions.append(batch["direction_target"].cpu())
 
         if total_samples == 0 or len(all_embeddings) == 0:
             return {
                 "masked_reconstruction_mse": 0.0,
                 "volatility_mse": 0.0,
+                "direction_accuracy": 0.0,
                 "embedding_silhouette_score": 0.0,
                 "volatility_correlation": 0.0,
                 "temporal_consistency": 0.0,
@@ -126,6 +134,14 @@ class EnhancedPretrainEvaluator:
 
         temporal_consistency = self._evaluate_temporal_consistency(all_embeddings)
         metrics["temporal_consistency"] = temporal_consistency
+
+        if len(all_pred_directions) > 0 and len(all_true_directions) > 0:
+            all_pred_dir_cat = torch.cat(all_pred_directions, dim=0)
+            all_true_dir_cat = torch.cat(all_true_directions, dim=0)
+            direction_accuracy = (all_pred_dir_cat == all_true_dir_cat).float().mean().item()
+            metrics["direction_accuracy"] = direction_accuracy
+        else:
+            metrics["direction_accuracy"] = 0.0
 
         return metrics
 
@@ -211,6 +227,11 @@ class EnhancedPretrainEvaluator:
         vol_mse_str = "nan" if (vol_mse != vol_mse or vol_mse == float('inf')) else f"{vol_mse:.6f}"
         logger.metric("Volatility MSE", vol_mse_str, indent=2)
         logger.metric("Volatility Correlation", f"{metrics.get('volatility_correlation', 0):.4f}", indent=2)
+
+        logger.blank_line()
+        logger.info("Direction Prediction:", indent=1)
+        dir_acc = metrics.get('direction_accuracy', 0)
+        logger.metric("Accuracy", f"{dir_acc:.4f} ({dir_acc*100:.2f}%)", indent=2)
 
         logger.blank_line()
         logger.info("Embedding Quality:", indent=1)

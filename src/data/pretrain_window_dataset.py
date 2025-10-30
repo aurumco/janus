@@ -98,11 +98,22 @@ class PretrainWindowDataset(Dataset):
         
         volatility = torch.tensor(vol_value * 100.0, dtype=torch.float32)
 
+        # Direction target: 1 if next close > current close, else 0
+        close_idx = 3  # Assuming close is at index 3 (open=0, high=1, low=2, close=3)
+        if end < self.n_timesteps:
+            current_close = self.features_mm[end - 1, close_idx]
+            next_close = self.features_mm[end, close_idx]
+            direction = torch.tensor(1 if next_close > current_close else 0, dtype=torch.long)
+        else:
+            # At the very end, use a neutral/random target
+            direction = torch.tensor(0, dtype=torch.long)
+
         return {
             "input_sequence": masked_sequence,
             "mask_binary": mask_binary,
             "original_sequence": original_sequence,
             "volatility_target": volatility.unsqueeze(0),
+            "direction_target": direction,
             "asset_id": asset_id,
         }
 

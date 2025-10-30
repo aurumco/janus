@@ -8,73 +8,72 @@
 
 ## Overview
 
-Janus V5 implements a cutting-edge two-phase training system for multi-asset cryptocurrency price forecasting using the Mamba State Space Model architecture.
+Janus V5 is a two-phase deep learning system for multi-asset cryptocurrency forecasting using Mamba State Space Models. The system learns market dynamics through self-supervised pre-training, then fine-tunes for directional price prediction.
 
-### Two-Phase Training Pipeline
+### Training Pipeline
 
-**Phase 1: Self-Supervised Pre-training (SSL)**
-- Foundation model trained on 5-minute multi-asset data
-- Masked reconstruction task (15% masking ratio)
-- Future volatility prediction task
-- Learns market dynamics across 15 cryptocurrency pairs
-- Larger model capacity (d_model=256, 8 layers)
+**Phase 1: Self-Supervised Pre-training**
+- 5-minute multi-asset data (15 crypto pairs)
+- Three SSL tasks: masked reconstruction, volatility prediction, direction classification
+- Model: `d_model=320`, `n_layers=8`, ~5M parameters
+- Enhanced contrastive learning for asset separation
 
 **Phase 2: Supervised Fine-tuning**
-- Task-specific regression on 30-minute data
+- 30-minute data with technical indicators
 - Transfer learning from pretrained backbone
-- Directional price change prediction
-- Optimized for inference (d_model=128, 4 layers)
+- Regression task: directional price change prediction
+- Preserves asset embeddings for multi-asset awareness
 
 ### Key Features
 
-- 🚀 **Mamba-SSM Architecture**: Linear-time sequence modeling with selective state spaces
-- 🔄 **Two-Phase Training**: Foundation model + task-specific fine-tuning
-- 🎯 **Multi-Asset Learning**: Simultaneous training on 15 cryptocurrency pairs
-- ⚡ **Advanced Optimization**:
-  - Gradient accumulation (4x for pre-train, 2x for fine-tune)
-  - Gradient checkpointing for memory efficiency
-  - Backbone freezing during early fine-tuning epochs
-  - Mixed precision training (AMP)
-- 📊 **Comprehensive Monitoring**: SSL metrics + regression performance
-- 🔧 **Production Ready**: Multi-format checkpoints, robust weight loading
+- 🚀 **Mamba-SSM**: Linear-time sequence modeling with selective state spaces
+- 🎯 **Multi-Task SSL**: Reconstruction + volatility + direction prediction
+- 🧠 **Robust Targets**: Volatility with tail-safe fallback, scaled for stable gradients
+- 📊 **Rich Metrics**: Reconstruction MSE, volatility correlation, direction accuracy, Silhouette score
+- ⚡ **Optimized Training**: AMP, cosine scheduling, early stopping, gradient clipping
+- 🔧 **Transfer Learning**: Asset embeddings preserved across pre-train → fine-tune
 
 ## Architecture
 
-### Phase 1: Pre-training Model (MambaPretrainModel)
+### Pre-training Model (MambaPretrainModel)
 
 ```
-Input (B, 256, 16) 
+Input (B, 72, 16) 
   → Asset Embedding (15 assets → 32-dim)
-  → Input Projection (16+32 → 256)
+  → Input Projection (16+32 → 320)
   → LayerNorm
-  → 8× Mamba Blocks (Pre-Norm, d_model=256)
-  ├─→ Reconstruction Head (256 → 16)
-  └─→ Volatility Head (256 → 1)
+  → 8× Mamba Blocks (Pre-Norm, d_model=320)
+  ├─→ Reconstruction Head (320 → 16)
+  ├─→ Volatility Head (320 → 1)
+  └─→ Direction Head (320 → 2)
 ```
 
 **SSL Tasks:**
-1. **Masked Reconstruction**: Predict original values at 15% randomly masked positions
-2. **Volatility Prediction**: Forecast future 60-step price volatility
+1. **Masked Reconstruction**: Predict original values at masked positions (MSE loss)
+2. **Volatility Prediction**: Forecast future volatility, scaled ×100 (Huber loss)
+3. **Direction Classification**: Binary prediction of next candle direction (CrossEntropy)
+4. **Contrastive Learning**: Asset separation via InfoNCE (temperature=0.05)
 
-**Parameters:** ~3.5M (d_model=256, n_layers=8)
+**Parameters:** ~5.0M (`d_model=320`, `n_layers=8`)
 
-### Phase 2: Fine-tuning Model (MambaRegressor)
+### Fine-tuning Model (MambaRegressor)
 
 ```
 Input (B, 96, 16)
-  → [Pretrained] Input Projection (16 → 128)
+  → [Pretrained] Asset Embedding (15 assets → 32-dim)
+  → [Pretrained] Input Projection (16+32 → 320)
   → [Pretrained] LayerNorm
-  → [Pretrained] 4× Mamba Blocks (Pre-Norm, d_model=128)
-  → [New] Regression Head (128 → 1)
+  → [Pretrained] 8× Mamba Blocks (Pre-Norm, d_model=320)
+  → [New] Regression Head (320 → 1)
 ```
 
 **Transfer Learning:**
-- Pretrained layers: `input_projection`, `input_norm`, `mamba_layers`, `layer_norms`
-- Randomly initialized: `regression_head`
-- First 3 epochs: Backbone frozen, only regression head trains
-- Remaining epochs: Full model fine-tuning
+- Pretrained: `asset_embedding`, `input_projection`, `input_norm`, `mamba_layers`, `layer_norms`
+- New: `regression_head`
+- First 3 epochs: Backbone frozen
+- Remaining epochs: Full fine-tuning
 
-**Parameters:** ~3.5M (d_model=256, n_layers=8)
+**Parameters:** ~5.0M (`d_model=320`, `n_layers=8`)
 
 
 
@@ -92,50 +91,59 @@ pip install -e .
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## Usage
 
-### 1. Dataset Preparation
-
-Datasets are pre-created with scalers:
-
-**Pre-training Dataset:**
-```
-outputs/datasets/pre-train/parquet/
-├── janus_pretrain_5min_dataset.parquet
-└── janus_pretrain_5min_scaler.joblib
-```
-
-**Fine-tuning Dataset:**
-```
-outputs/datasets/fine-tune/parquet/
-├── janus_finetune_30min_dataset.parquet
-└── janus_finetune_30min_scaler.joblib
-```
-
-### 2. Phase 1: Pre-training
+### Pre-training
 
 ```bash
 python train.py --mode pretrain --config config.yaml
 ```
 
 **Outputs:**
-- `checkpoints/pretrain/best_model.pt`
-- `checkpoints/pretrain/best_model_state_dict.pth`
-- `checkpoints/pretrain/latest_checkpoint.pt`
+- `checkpoints/pretrain/checkpoint_best.pt` - Best model by validation loss
+- `logs/pretrain_<timestamp>.log` - Training logs
+- `results/pretrain_<timestamp>/` - Metrics and curves
 
-### 3. Phase 2: Fine-tuning
+**Flags:**
+- `--config` - Path to config file (default: `config.yaml`)
+- `--mode` - Training mode: `pretrain` or `finetune`
+
+### Fine-tuning
 
 ```bash
 python train.py \
   --mode finetune \
   --config config.yaml \
-  --load-checkpoint checkpoints/pretrain/best_model.pt
+  --load-checkpoint checkpoints/pretrain/checkpoint_best.pt
 ```
 
 **Outputs:**
-- `checkpoints/finetune/best_model.pt`
-- `checkpoints/finetune/best_model_state_dict.pth`
+- `checkpoints/finetune/checkpoint_best.pt`
+- `logs/finetune_<timestamp>.log`
 - `results/finetune_<timestamp>/`
+
+**Flags:**
+- `--load-checkpoint` - Path to pretrained checkpoint
+
+### Evaluation
+
+```bash
+python evaluate_model.py
+```
+
+Auto-discovers checkpoint and config. Alternatively:
+
+```bash
+python evaluate_model.py \
+  --checkpoint checkpoints/pretrain/checkpoint_best.pt \
+  --config config.yaml \
+  --max-batches 200
+```
+
+**Outputs:**
+- `evaluation_results/eval_<timestamp>/evaluation_results.txt`
+- `evaluation_results/eval_<timestamp>/training_curves.png`
+- `logs/evaluate_<timestamp>.log`
 
 ## Project Structure
 

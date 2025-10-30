@@ -1,17 +1,33 @@
 """Professional logging utility for clean, organized console output."""
 
 import sys
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TextIO
 from datetime import datetime
+from pathlib import Path
 
 
 class TrainingLogger:
     """Clean, professional logger for training progress."""
     
-    def __init__(self, width: int = 80):
+    def __init__(self, width: int = 80, log_file: Optional[str] = None):
         self.width = width
         self.separator_width = 80  # Fixed width for all separators
         self.last_was_progress = False
+        self.log_file: Optional[TextIO] = None
+        
+        if log_file:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_file = open(log_path, 'w', encoding='utf-8')
+            self._log_to_file(f"Log started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
+    def _log_to_file(self, message: str):
+        """Write message to log file if enabled."""
+        if self.log_file:
+            # Strip ANSI codes and progress indicators for clean file logs
+            clean_msg = message.replace('\r', '').replace('✓', '[OK]').replace('⚠', '[WARN]').replace('✗', '[ERROR]')
+            self.log_file.write(clean_msg)
+            self.log_file.flush()
     
     def _clear_line(self):
         """Clear the current line."""
@@ -20,48 +36,66 @@ class TrainingLogger:
             sys.stdout.flush()
             self.last_was_progress = False
     
+    def close(self):
+        """Close the log file if open."""
+        if self.log_file:
+            self._log_to_file(f"\nLog ended at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self.log_file.close()
+            self.log_file = None
+    
     def header(self, title: str):
         """Print a main header."""
         self._clear_line()
-        print(f"\n{'═' * self.separator_width}")
-        print(f"{title.upper().center(self.separator_width)}")
-        print(f"{'═' * self.separator_width}\n")
+        msg = f"\n{'═' * self.separator_width}\n{title.upper().center(self.separator_width)}\n{'═' * self.separator_width}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def section(self, title: str):
         """Print a section header."""
         self._clear_line()
-        print(f"\n{title}")
-        print(f"{'─' * self.separator_width}")
+        msg = f"\n{title}\n{'─' * self.separator_width}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def info(self, message: str, indent: int = 0):
         """Print an info message."""
         self._clear_line()
         prefix = "  " * indent
-        print(f"{prefix}{message}")
+        msg = f"{prefix}{message}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def success(self, message: str, indent: int = 0):
         """Print a success message."""
         self._clear_line()
         prefix = "  " * indent
-        print(f"{prefix}✓ {message}")
+        msg = f"{prefix}✓ {message}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def warning(self, message: str, indent: int = 0):
         """Print a warning message."""
         self._clear_line()
         prefix = "  " * indent
-        print(f"{prefix}⚠ {message}")
+        msg = f"{prefix}⚠ {message}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def error(self, message: str, indent: int = 0):
         """Print an error message."""
         self._clear_line()
         prefix = "  " * indent
-        print(f"{prefix}✗ {message}")
+        msg = f"{prefix}✗ {message}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def metric(self, name: str, value: Any, indent: int = 0, width: int = 20):
         """Print a metric in key-value format."""
         self._clear_line()
         prefix = "  " * indent
-        print(f"{prefix}• {name:<{width}}: {value}")
+        msg = f"{prefix}• {name:<{width}}: {value}\n"
+        print(msg, end='')
+        self._log_to_file(msg)
     
     def config_section(self, title: str, config: Dict[str, Any], indent: int = 0):
         """Print a configuration section."""
@@ -82,6 +116,7 @@ class TrainingLogger:
         """Print a blank line for spacing."""
         self._clear_line()
         print()
+        self._log_to_file("\n")
     
     def separator(self, char: str = "─"):
         """Print a separator line."""

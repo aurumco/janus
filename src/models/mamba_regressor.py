@@ -21,6 +21,8 @@ class MambaRegressor(nn.Module):
         n_layers: int,
         output_dim: int = 1,
         dropout: float = 0.1,
+        num_assets: int = 15,
+        asset_embedding_dim: int = 32,
         pretrained_checkpoint_path: Optional[str] = None,
     ) -> None:
         """Initialize Mamba regressor.
@@ -33,6 +35,8 @@ class MambaRegressor(nn.Module):
             n_layers: Number of Mamba blocks.
             output_dim: Output dimension (1 for single value regression).
             dropout: Dropout probability.
+            num_assets: Number of unique assets.
+            asset_embedding_dim: Asset embedding dimension.
             pretrained_checkpoint_path: Path to pretrained model checkpoint.
         """
         super().__init__()
@@ -40,8 +44,17 @@ class MambaRegressor(nn.Module):
         self.input_dim = input_dim
         self.d_model = d_model
         self.output_dim = output_dim
+        self.num_assets = num_assets
+        self.asset_embedding_dim = asset_embedding_dim
 
-        self.input_projection = nn.Linear(input_dim, d_model)
+        if asset_embedding_dim > 0:
+            self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
+            total_input_dim = input_dim + asset_embedding_dim
+        else:
+            self.asset_embedding = None
+            total_input_dim = input_dim
+
+        self.input_projection = nn.Linear(total_input_dim, d_model)
         self.input_norm = nn.LayerNorm(d_model)
 
         self.mamba_layers = nn.ModuleList([
@@ -69,15 +82,23 @@ class MambaRegressor(nn.Module):
         if pretrained_checkpoint_path:
             self._load_pretrained_weights(pretrained_checkpoint_path)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, asset_ids: torch.Tensor = None) -> torch.Tensor:
         """Forward pass through the regressor.
 
         Args:
             x: Input tensor of shape (batch, seq_len, input_dim).
+            asset_ids: Asset ID tensor of shape (batch,) if using embeddings.
 
         Returns:
             Predictions tensor of shape (batch, output_dim).
         """
+        batch_size, seq_len, _ = x.shape
+
+        if self.asset_embedding is not None and asset_ids is not None:
+            asset_emb = self.asset_embedding(asset_ids)
+            asset_emb = asset_emb.unsqueeze(1).expand(-1, seq_len, -1)
+            x = torch.cat([x, asset_emb], dim=-1)
+
         x = self.input_projection(x)
         x = self.input_norm(x)
 
@@ -149,6 +170,7 @@ class MambaRegressor(nn.Module):
             pretrained_state = pretrained_state.state_dict()
 
         backbone_keys = [
+            "asset_embedding",
             "input_projection",
             "input_norm",
             "mamba_layers",

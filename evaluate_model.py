@@ -32,7 +32,7 @@ try:
     from src.models.mamba_pretrain import MambaPretrainModel
     from src.evaluation.pretrain_evaluator import PretrainEvaluator
     from src.evaluation.visualizer import MetricsVisualizer
-    from src.utils.logger import logger
+    from src.utils.logger import TrainingLogger
 except Exception as e:
     sys.stderr.write(f"Import error: {e}\n")
     sys.exit(1)
@@ -86,10 +86,18 @@ def main():
         output_dir = Path(args.output_dir)
     else:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_dir = Path('evaluation_results') / f'eval_{timestamp}'
+        output_dir = Path('evaluation_results') / f"eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup logger with file output
+    log_dir = Path('logs')
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / f"evaluate_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    logger = TrainingLogger(log_file=str(log_file))
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    logger.section("Model Evaluation")
+    logger.header(f"Janus Model Evaluation")
     logger.info(f"Checkpoint: {checkpoint_path}", indent=1)
     logger.info(f"Config: {config_path}", indent=1)
     logger.info(f"Output: {output_dir}", indent=1)
@@ -140,7 +148,7 @@ def main():
     logger.section("Loading Model")
     model = MambaPretrainModel(
         input_dim=pget('data.num_features', 16),
-        d_model=pget('model.d_model', 256),
+        d_model=pget('model.d_model', 320),
         d_state=pget('model.d_state', 16),
         d_conv=pget('model.d_conv', 4),
         n_layers=pget('model.n_layers', 8),
@@ -150,6 +158,7 @@ def main():
         num_assets=len(full_config.get('assets', [])),
         asset_embedding_dim=pget('model.asset_embedding_dim', 32),
         use_gradient_checkpointing=pget('model.use_gradient_checkpointing', False),
+        enable_direction_head=pget('model.enable_direction_head', True),
     ).to(device)
     
     checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
@@ -200,11 +209,14 @@ def main():
     if 'history' in checkpoint:
         logger.info("Generating training curves from checkpoint history", indent=1)
         visualizer = MetricsVisualizer()
-        visualizer.plot_training_curves(checkpoint['history'], output_dir)
-        logger.success(f"Training curves saved to {output_dir / 'training_curves.png'}", indent=1)
+        curves_file = output_dir / 'training_curves.png'
+        logger.info(f"Saving curves to {curves_file}", indent=1)
+        visualizer.save_training_curves(checkpoint, str(curves_file))
+        logger.success(f"Training curves saved to {curves_file}", indent=1)
     
-    logger.blank_line()
-    logger.success("Evaluation complete!")
+    logger.success(f"Evaluation complete! Results saved to {output_dir}", indent=1)
+    logger.info(f"Log file: {log_file}", indent=1)
+    logger.close()
 
 
 if __name__ == '__main__':

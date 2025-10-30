@@ -13,9 +13,10 @@ class PretrainLoss(nn.Module):
     def __init__(
         self,
         masked_price_weight: float = 1.0,
-        volatility_weight: float = 0.5,
-        contrastive_weight: float = 0.2,
-        temporal_consistency_weight: float = 0.1,
+        volatility_weight: float = 1.5,
+        direction_weight: float = 0.5,
+        contrastive_weight: float = 0.3,
+        temporal_consistency_weight: float = 0.2,
         temperature: float = 0.07,
         use_huber: bool = True,
         huber_delta: float = 1.0,
@@ -25,6 +26,7 @@ class PretrainLoss(nn.Module):
         Args:
             masked_price_weight: Weight for masked price reconstruction loss.
             volatility_weight: Weight for volatility prediction loss.
+            direction_weight: Weight for direction prediction loss.
             contrastive_weight: Weight for contrastive learning across assets.
             temporal_consistency_weight: Weight for temporal smoothness.
             temperature: Temperature parameter for contrastive loss.
@@ -35,6 +37,7 @@ class PretrainLoss(nn.Module):
 
         self.masked_price_weight = masked_price_weight
         self.volatility_weight = volatility_weight
+        self.direction_weight = direction_weight
         self.contrastive_weight = contrastive_weight
         self.temporal_consistency_weight = temporal_consistency_weight
         self.temperature = temperature
@@ -45,6 +48,8 @@ class PretrainLoss(nn.Module):
         else:
             self.reconstruction_loss_fn = nn.MSELoss()
             self.volatility_loss_fn = nn.MSELoss()
+        
+        self.direction_loss_fn = nn.CrossEntropyLoss()
 
     def forward(
         self, model_outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
@@ -60,10 +65,12 @@ class PretrainLoss(nn.Module):
         """
         reconstructed_sequence = model_outputs["reconstructed_sequence"]
         predicted_volatility = model_outputs["predicted_volatility"]
+        predicted_direction = model_outputs.get("predicted_direction", None)
 
         mask_binary = batch["mask_binary"]
         original_sequence = batch["original_sequence"]
         volatility_target = batch["volatility_target"]
+        direction_target = batch.get("direction_target", None)
 
         batch_size = reconstructed_sequence.size(0)
 
@@ -89,14 +96,23 @@ class PretrainLoss(nn.Module):
         if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
             volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
 
+        if predicted_direction is not None and direction_target is not None:
+            direction_loss = self.direction_loss_fn(predicted_direction, direction_target)
+            if torch.isnan(direction_loss) or torch.isinf(direction_loss):
+                direction_loss = torch.tensor(0.0, device=predicted_direction.device)
+        else:
+            direction_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
+
         total_loss = (
             self.masked_price_weight * masked_price_loss
             + self.volatility_weight * volatility_loss
+            + self.direction_weight * direction_loss
         )
         
         loss_dict = {
             "masked_price_loss": masked_price_loss,
             "volatility_loss": volatility_loss,
+            "direction_loss": direction_loss,
         }
 
         if self.contrastive_weight > 0 and "asset_id" in batch:
@@ -121,7 +137,7 @@ class PretrainLoss(nn.Module):
     def _contrastive_loss(
         self, embeddings: torch.Tensor, asset_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Fully vectorized contrastive loss using InfoNCE.
+        """Fully vectorized contrastive loss using InfoNCE with improved pooling.
 
         Args:
             embeddings: Sequence representations (batch, seq_len, features).
@@ -130,7 +146,10 @@ class PretrainLoss(nn.Module):
         Returns:
             Contrastive loss value.
         """
-        pooled = embeddings.mean(dim=1)
+        # Improved pooling: combine mean and max for richer representation
+        mean_pool = embeddings.mean(dim=1)
+        max_pool, _ = embeddings.max(dim=1)
+        pooled = (mean_pool + max_pool) / 2.0
         pooled_normalized = F.normalize(pooled, p=2, dim=1)
         
         batch_size = pooled.size(0)
