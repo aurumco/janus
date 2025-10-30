@@ -317,8 +317,6 @@ class DataLoaderFactory:
             if self.verbose and logger:
                 logger.info("Creating DataLoaders", indent=1)
             use_streaming_memmap = features_path is not None and self.mode == "pretrain"
-            # CRITICAL FIX: Only disable workers for actual streaming fallback
-            # Memmap is designed for multi-process shared memory access and works great with workers
             streaming_active = self.use_streaming_fallback
             if self.verbose:
                 if self.use_streaming_fallback:
@@ -334,11 +332,8 @@ class DataLoaderFactory:
                 if logger:
                     logger.info(f"Backend: {backend}", indent=2)
 
-            # Enable multiprocessing for memmap - it's designed for shared memory access
             workers = 0 if streaming_active else self.num_workers
-            # Enable pin_memory for faster CPU->GPU transfer when using CUDA
             pin_mem = self.num_workers > 0 and not streaming_active
-            # Enable shuffling for memmap - DataLoader handles it via randomized indices
             do_shuffle = self.shuffle_train
             
             train_loader = DataLoader(

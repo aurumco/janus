@@ -32,9 +32,9 @@ pretrain:
     volatility_lookahead: 60
     smart_masking_prob: 0.4
     cross_asset_masking_prob: 0.3
-    train_ratio: 0.85
-    val_ratio: 0.15
-    test_ratio: 0.0
+    train_ratio: 0.7
+    val_ratio: 0.2
+    test_ratio: 0.1
     num_workers: 4
     shuffle_train: true
     use_streaming_fallback: false
@@ -53,7 +53,7 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 30
+    epochs: 25
     learning_rate: 0.0001
     weight_decay: 0.01
     optimizer: "adamw"

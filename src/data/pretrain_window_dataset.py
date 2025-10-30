@@ -42,7 +42,6 @@ class PretrainWindowDataset(Dataset):
             import mmap
             import ctypes
             libc = ctypes.CDLL('libc.so.6')
-            # Use MADV_SEQUENTIAL for better prefetching
             advise_flag = getattr(mmap, 'MADV_SEQUENTIAL', None)
             if advise_flag is not None:
                 libc.madvise(self.features_mm.ctypes.data, self.features_mm.nbytes, advise_flag)
@@ -70,7 +69,6 @@ class PretrainWindowDataset(Dataset):
         i = self.start_index + (idx * self.stride)
         end = i + self.sequence_length
 
-        # Direct conversion from memmap slice to tensor (no intermediate copy)
         original_sequence = torch.from_numpy(self.features_mm[i:end, :].copy())
         
         asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)

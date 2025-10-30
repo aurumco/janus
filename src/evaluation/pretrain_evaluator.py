@@ -70,7 +70,6 @@ class EnhancedPretrainEvaluator:
 
                 batch_size = input_seq.size(0)
                 
-                # Vectorized reconstruction loss (much faster)
                 mask_exp = mask_binary.unsqueeze(-1).expand_as(recon_seq)
                 masked_recon = recon_seq[mask_exp]
                 masked_orig = original_seq[mask_exp]
@@ -95,6 +94,15 @@ class EnhancedPretrainEvaluator:
                 all_asset_ids.append(asset_id.cpu())
                 all_pred_vols.append(pred_vol.cpu())
                 all_true_vols.append(vol_target.cpu())
+
+        if total_samples == 0 or len(all_embeddings) == 0:
+            return {
+                "masked_reconstruction_mse": 0.0,
+                "volatility_mse": 0.0,
+                "embedding_silhouette_score": 0.0,
+                "volatility_correlation": 0.0,
+                "temporal_consistency": 0.0,
+            }
 
         all_embeddings_cat = torch.cat(all_embeddings, dim=0)
         all_asset_ids_cat = torch.cat(all_asset_ids, dim=0)

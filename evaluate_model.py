@@ -6,37 +6,81 @@ from pathlib import Path
 from datetime import datetime
 
 import torch
+import warnings
+
+try:
+    _here = Path(__file__).resolve().parent
+except NameError:
+    _here = Path.cwd()
+
+_candidates = {
+    _here,
+    _here.parent,
+    _here / 'janus',
+    Path('/kaggle/working'),
+    Path('/kaggle/working/janus'),
+}
+for _p in list(_candidates):
+    _ps = str(_p)
+    if _ps not in sys.path:
+        sys.path.insert(0, _ps)
 
 try:
     from src.config.config_loader import ConfigLoader
     from src.data.data_loader import DataLoaderFactory
+    from src.data.sequence_strategy import SequenceProcessingStrategy
     from src.models.mamba_pretrain import MambaPretrainModel
     from src.evaluation.pretrain_evaluator import PretrainEvaluator
     from src.evaluation.visualizer import MetricsVisualizer
     from src.utils.logger import logger
-except ImportError as e:
-    print(f"Import error: {e}")
+except Exception as e:
+    sys.stderr.write(f"Import error: {e}\n")
     sys.exit(1)
 
 
 def main():
+    warnings.filterwarnings("ignore", category=FutureWarning, message="`torch.cuda.amp.custom_fwd")
+    warnings.filterwarnings("ignore", category=FutureWarning, message="`torch.cuda.amp.custom_bwd")
+
     parser = argparse.ArgumentParser(description='Evaluate trained model')
-    parser.add_argument('--checkpoint', type=str, required=True, help='Path to checkpoint file')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint file')
     parser.add_argument('--config', type=str, default='config.yaml', help='Path to config file')
     parser.add_argument('--output-dir', type=str, default=None, help='Output directory for results')
     parser.add_argument('--max-batches', type=int, default=100, help='Max batches to evaluate')
     
-    args = parser.parse_args()
+    raw_args = sys.argv[1:]
+    filtered_args = [a for a in raw_args if not a.startswith('-f') and 'kernel' not in a.lower()]
+    args = parser.parse_args(filtered_args)
     
-    checkpoint_path = Path(args.checkpoint)
-    if not checkpoint_path.exists():
-        logger.error(f"Checkpoint not found: {checkpoint_path}")
-        sys.exit(1)
+    if args.checkpoint is None:
+        candidates = [
+            Path('/kaggle/working/checkpoints/pretrain/checkpoint_best.pt'),
+            Path('/kaggle/working/checkpoints/pretrain/checkpoint_latest.pt'),
+            Path('checkpoints/pretrain/checkpoint_best.pt'),
+            Path('checkpoints/pretrain/checkpoint_latest.pt'),
+        ]
+        checkpoint_path = next((p for p in candidates if p.exists()), None)
+        if checkpoint_path is None:
+            logger.error("No checkpoint provided and none found under checkpoints/pretrain")
+            sys.exit(1)
+    else:
+        checkpoint_path = Path(args.checkpoint)
+        if not checkpoint_path.exists():
+            logger.error(f"Checkpoint not found: {checkpoint_path}")
+            sys.exit(1)
     
-    config_path = Path(args.config)
+    config_path = Path(args.config) if args.config else Path('config.yaml')
     if not config_path.exists():
-        logger.error(f"Config not found: {config_path}")
-        sys.exit(1)
+        alt_candidates = [
+            Path('./config.yaml'),
+            Path('./janus/config.yaml'),
+            Path('/kaggle/working/janus/config.yaml'),
+            Path('/kaggle/working/config.yaml'),
+        ]
+        config_path = next((p for p in alt_candidates if p.exists()), None)
+        if config_path is None:
+            logger.error("Config file not found (tried config.yaml and janus/config.yaml)")
+            sys.exit(1)
     
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -51,43 +95,61 @@ def main():
     logger.info(f"Output: {output_dir}", indent=1)
     
     config_loader = ConfigLoader(str(config_path))
-    full_config = config_loader.get_full_config()
-    config = config_loader.get_config('pretrain')
+    full_config = config_loader.config
+    pget = lambda k, d=None: config_loader.get(f'pretrain.{k}', d)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Device: {device}", indent=1)
     
     logger.section("Loading Data")
+    processing_strategy = SequenceProcessingStrategy(
+        feature_columns=None,
+        target_column=None,
+        sequence_length=pget('data.sequence_length', 72),
+    )
     data_factory = DataLoaderFactory(
-        data_path=config.get('data.path'),
+        data_path=pget('data.path'),
+        processing_strategy=processing_strategy,
         mode='pretrain',
-        batch_size=config.get('data.batch_size', 256),
-        sequence_length=config.get('data.sequence_length', 72),
-        num_workers=config.get('data.num_workers', 4),
-        train_ratio=config.get('data.train_ratio', 0.7),
-        val_ratio=config.get('data.val_ratio', 0.15),
-        test_ratio=config.get('data.test_ratio', 0.15),
-        masking_ratio=config.get('data.masking_ratio', 0.15),
-        volatility_lookahead=config.get('data.volatility_lookahead', 60),
-        stride=config.get('data.stride', 4),
-        use_gpu_preprocess=config.get('data.use_gpu_preprocess', True),
+        batch_size=pget('data.batch_size', 256),
+        sequence_length=pget('data.sequence_length', 72),
+        num_workers=pget('data.num_workers', 4),
+        train_ratio=pget('data.train_ratio', 0.7),
+        val_ratio=pget('data.val_ratio', 0.15),
+        test_ratio=pget('data.test_ratio', 0.15),
+        masking_ratio=pget('data.masking_ratio', 0.15),
+        volatility_lookahead=pget('data.volatility_lookahead', 60),
+        stride=pget('data.stride', 4),
+        use_gpu_preprocess=pget('data.use_gpu_preprocess', True),
         verbose=True,
     )
     
     data_loaders = data_factory.create_data_loaders()
     val_loader = data_loaders['val']
     test_loader = data_loaders['test']
+
+    try:
+        train_loader = data_loaders['train']
+        logger.info(
+            f"Datasets: train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, test={len(test_loader.dataset)}",
+            indent=1,
+        )
+    except Exception:
+        pass
     
     logger.section("Loading Model")
     model = MambaPretrainModel(
-        input_dim=config.get('data.num_features', 16),
-        d_model=config.get('model.d_model', 256),
-        n_layers=config.get('model.n_layers', 8),
-        d_state=config.get('model.d_state', 16),
-        d_conv=config.get('model.d_conv', 4),
-        expand=config.get('model.expand', 2),
+        input_dim=pget('data.num_features', 16),
+        d_model=pget('model.d_model', 256),
+        d_state=pget('model.d_state', 16),
+        d_conv=pget('model.d_conv', 4),
+        n_layers=pget('model.n_layers', 8),
+        reconstruction_head_dim=pget('data.num_features', 16),
+        volatility_head_dim=pget('model.volatility_head_dim', 1),
+        dropout=pget('model.dropout', 0.1),
         num_assets=len(full_config.get('assets', [])),
-        asset_embedding_dim=config.get('model.asset_embedding_dim', 32),
+        asset_embedding_dim=pget('model.asset_embedding_dim', 32),
+        use_gradient_checkpointing=pget('model.use_gradient_checkpointing', False),
     ).to(device)
     
     checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
@@ -105,8 +167,18 @@ def main():
     evaluator.print_metrics(val_metrics)
     
     logger.section("Evaluation on Test Set")
-    test_metrics = evaluator.evaluate(test_loader, max_batches=args.max_batches)
-    evaluator.print_metrics(test_metrics)
+    if len(test_loader) == 0:
+        logger.warning("Test loader is empty; skipping test evaluation", indent=1)
+        test_metrics = {
+            'masked_reconstruction_mse': 0.0,
+            'volatility_mse': 0.0,
+            'embedding_silhouette_score': 0.0,
+            'volatility_correlation': 0.0,
+            'temporal_consistency': 0.0,
+        }
+    else:
+        test_metrics = evaluator.evaluate(test_loader, max_batches=args.max_batches)
+        evaluator.print_metrics(test_metrics)
     
     logger.section("Saving Results")
     results_file = output_dir / 'evaluation_results.txt'

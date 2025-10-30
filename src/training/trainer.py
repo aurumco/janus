@@ -304,7 +304,6 @@ class Trainer:
 
             loss_value = loss.item()
             
-            # Check for NaN or inf in loss
             if not torch.isfinite(loss):
                 print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
                 print(f"  Loss value: {loss_value}")
@@ -313,13 +312,11 @@ class Trainer:
             
             total_loss += loss_value
             
-            # Reduce GC frequency to minimize overhead
             if batch_idx > 0 and batch_idx % 1000 == 0:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-        # Check if we got any valid losses
         num_batches = len(train_loader)
         if total_loss == 0 and num_batches > 0:
             print("\nWARNING: All batches had zero loss!")
@@ -390,7 +387,6 @@ class Trainer:
 
                 loss_value = loss.item()
                 
-                # Check for NaN in validation
                 if not torch.isfinite(loss):
                     print(f"\nWARNING: Non-finite loss in validation batch {batch_idx}")
                     continue
@@ -400,13 +396,11 @@ class Trainer:
         avg_loss = total_loss / len(val_loader)
         vprogress.close()
         
-        # Cleanup after validation
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
-        # Add averaged loss components
         for key, val in loss_components.items():
             metrics[key] = val / len(val_loader)
 
@@ -441,7 +435,6 @@ class Trainer:
             params=params
         )
 
-        # Log parameter counts once to TensorBoard for visibility
         if self.writer:
             params = actual_model.get_num_parameters()
             self.writer.add_text('model/parameters', f"total: {params['total']}, trainable: {params['trainable']}", 0)
@@ -469,7 +462,6 @@ class Trainer:
                 
             val_metrics = self.validate(val_loader, epoch)
 
-            # Warmup phase: linearly increase LR
             if epoch <= self.warmup_epochs:
                 warmup_lr = self.initial_lr * (epoch / self.warmup_epochs)
                 for param_group in self.optimizer.param_groups:
@@ -491,7 +483,6 @@ class Trainer:
                 self.writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
                 self.writer.add_scalar('Learning_Rate', current_lr, epoch)
                 
-                # Log additional loss components if present
                 for key in train_metrics:
                     if key not in ['loss']:
                         self.writer.add_scalar(f'Loss/train_{key}', train_metrics[key], epoch)
@@ -514,13 +505,11 @@ class Trainer:
             else:
                 self.patience_counter += 1
             
-            # Print epoch summary
             logger.epoch_summary(epoch, epochs, summary_metrics, epoch_time, is_best)
             
             if not is_best:
                 logger.info(f"Patience: {self.patience_counter}/{self.early_stopping_patience}", indent=1)
             
-            # Auto-save checkpoint every epoch
             if self.checkpoint_dir:
                 self.save_checkpoint(epoch, is_best=is_best)
                 if is_best:
