@@ -127,9 +127,9 @@ class PretrainLoss(nn.Module):
         }
 
         if self.contrastive_weight > 0 and "asset_id" in batch:
-            hidden_states = model_outputs.get("hidden_states", reconstructed_sequence)
+            hidden_states = model_outputs.get("contrastive_embedding", model_outputs.get("hidden_states", reconstructed_sequence))
             contrastive_loss = self._contrastive_loss(
-                hidden_states, batch["asset_id"]
+                hidden_states, batch["asset_id"], batch.get("mask_binary", None)
             )
             if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
                 contrastive_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
@@ -147,9 +147,9 @@ class PretrainLoss(nn.Module):
         return loss_dict
 
     def _contrastive_loss(
-        self, embeddings: torch.Tensor, asset_ids: torch.Tensor
+        self, embeddings: torch.Tensor, asset_ids: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """Fully vectorized contrastive loss using InfoNCE with improved pooling.
+        """Contrastive loss (InfoNCE) with masked pooling over sequence tokens.
 
         Args:
             embeddings: Sequence representations (batch, seq_len, features).
@@ -158,9 +158,20 @@ class PretrainLoss(nn.Module):
         Returns:
             Contrastive loss value.
         """
-        # Improved pooling: combine mean and max for richer representation
-        mean_pool = embeddings.mean(dim=1)
-        max_pool, _ = embeddings.max(dim=1)
+        # Pool only unmasked tokens: valid = ~mask
+        if mask is not None:
+            valid = (~mask.bool())  # (batch, seq)
+            valid_f = valid.float().unsqueeze(-1)  # (batch, seq, 1)
+            sum_emb = (embeddings * valid_f).sum(dim=1)  # (batch, feat)
+            count = valid_f.sum(dim=1).clamp_min(1.0)    # (batch, 1)
+            mean_pool = sum_emb / count
+            masked_embeddings = embeddings.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+            max_pool, _ = masked_embeddings.max(dim=1)
+            # If an entire sequence was masked, fallback max to mean
+            max_pool[torch.isinf(max_pool)] = mean_pool[torch.isinf(max_pool)]
+        else:
+            mean_pool = embeddings.mean(dim=1)
+            max_pool, _ = embeddings.max(dim=1)
         pooled = (mean_pool + max_pool) / 2.0
         pooled_normalized = F.normalize(pooled, p=2, dim=1)
         

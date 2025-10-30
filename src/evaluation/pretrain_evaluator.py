@@ -105,7 +105,20 @@ class EnhancedPretrainEvaluator:
                 total_vol_loss += vol_loss_batch * batch_size
                 total_samples += batch_size
 
-                pooled_embedding = recon_seq.mean(dim=1)
+                contrastive_seq = outputs.get("contrastive_embedding", None)
+                if contrastive_seq is not None:
+                    m = mask_binary
+                    valid = (~m.bool()) if m is not None else None
+                    if valid is not None:
+                        vf = valid.float().unsqueeze(-1)
+                        sum_emb = (contrastive_seq * vf).sum(dim=1)
+                        count = vf.sum(dim=1).clamp_min(1.0)
+                        mean_pool = sum_emb / count
+                    else:
+                        mean_pool = contrastive_seq.mean(dim=1)
+                    pooled_embedding = mean_pool
+                else:
+                    pooled_embedding = recon_seq.mean(dim=1)
                 all_embeddings.append(pooled_embedding.cpu())
                 all_asset_ids.append(asset_id.cpu())
                 if vol_valid is not None:

@@ -95,6 +95,11 @@ class MambaPretrainModel(nn.Module):
                 nn.Linear(d_model // 2, 2),
             )
 
+        self.contrastive_proj = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model // 2),
+        )
+
     def forward(
         self, x: torch.Tensor, asset_ids: torch.Tensor = None
     ) -> Dict[str, torch.Tensor]:
@@ -132,10 +137,13 @@ class MambaPretrainModel(nn.Module):
         last_hidden = x[:, -1, :]
         predicted_volatility = self.volatility_head(last_hidden)
 
+        projected_hidden = self.contrastive_proj(x)
+
         output = {
             "reconstructed_sequence": reconstructed_sequence,
             "predicted_volatility": predicted_volatility,
             "hidden_states": x,
+            "contrastive_embedding": projected_hidden,
         }
 
         if self.enable_direction_head:
