@@ -70,22 +70,23 @@ class PretrainDataset(Dataset):
         masked_sequence[mask_binary] = 0.0
         
         future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
-        if future_end_idx > idx + 1:
+        if future_end_idx > idx + 5:
+            close_price_idx = min(3, self.n_features - 1)
             future_prices = self.X[
                 idx + 1 : future_end_idx,
                 :,
-                self.price_column_idx,
+                close_price_idx,
             ]
             
-            if len(future_prices) > 1:
-                log_returns = torch.log(
-                    (future_prices[1:] + 1e-8) / (future_prices[:-1] + 1e-8)
-                )
-                volatility = torch.std(log_returns)
+            if len(future_prices) > 5:
+                returns = future_prices[1:] - future_prices[:-1]
+                volatility = torch.std(returns) + 1e-6
             else:
                 volatility = torch.tensor(0.0)
         else:
             volatility = torch.tensor(0.0)
+        
+        volatility = volatility * 100.0
 
         return {
             "input_sequence": masked_sequence,

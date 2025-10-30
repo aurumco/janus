@@ -78,18 +78,19 @@ class PretrainWindowDataset(Dataset):
         masked_sequence[mask_binary] = 0.0
 
         future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
-        lookahead_available = (future_end_idx - end) > 1
+        lookahead_available = (future_end_idx - end) > 5
 
         if lookahead_available:
-            prices_slice = self.features_mm[end:future_end_idx, self.price_column_idx]
-            log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
-            vol_value = float(np.std(log_returns))
+            close_price_idx = min(3, self.n_features - 1)
+            prices_slice = self.features_mm[end:future_end_idx, close_price_idx]
+            
+            returns = np.diff(prices_slice)
+            
+            vol_value = float(np.std(returns) + 1e-6)
             volatility_valid = True
-            try:
-                if np.random.random() < 5e-4 and abs(vol_value) < 1e-8:
-                    print(f"[DEBUG] Volatility near zero at idx={idx} end={end}; lookahead={self.volatility_lookahead}")
-            except Exception:
-                pass
+            
+            if idx % 1000 == 0:
+                print(f"[DEBUG idx={idx}] Volatility: {vol_value:.6f}, Returns mean: {np.mean(returns):.6f}, Returns std: {np.std(returns):.6f}")
         else:
             vol_value = 0.0
             volatility_valid = False
