@@ -135,6 +135,7 @@ class MambaPretrainModel(nn.Module):
         output = {
             "reconstructed_sequence": reconstructed_sequence,
             "predicted_volatility": predicted_volatility,
+            "hidden_states": x,
         }
 
         if self.enable_direction_head:

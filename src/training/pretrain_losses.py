@@ -127,8 +127,9 @@ class PretrainLoss(nn.Module):
         }
 
         if self.contrastive_weight > 0 and "asset_id" in batch:
+            hidden_states = model_outputs.get("hidden_states", reconstructed_sequence)
             contrastive_loss = self._contrastive_loss(
-                reconstructed_sequence, batch["asset_id"]
+                hidden_states, batch["asset_id"]
             )
             if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
                 contrastive_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
