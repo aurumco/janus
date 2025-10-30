@@ -169,6 +169,7 @@ class TrainingLogger:
             else:
                 print(f"│  • {key:<18}: {value:.6e}")
         print("└" + "─" * 50)
+        sys.stdout.flush()
 
 
 # Global logger instance
