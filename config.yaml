@@ -66,10 +66,10 @@ pretrain:
     save_best_only: true
   
   loss:
-    masked_price_weight: 1.0
-    volatility_weight: 0.5
-    contrastive_weight: 0.2
-    temporal_consistency_weight: 0.1
+    masked_price_weight: 1.2
+    volatility_weight: 1.0
+    contrastive_weight: 0.3
+    temporal_consistency_weight: 0.2
     temperature: 0.07
 
 # Fine-tuning configuration for regression on 30min data

@@ -78,12 +78,25 @@ class PretrainWindowDataset(Dataset):
         masked_sequence[mask_binary] = 0.0
 
         future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
-        if future_end_idx > end and (future_end_idx - end) > 1:
+        lookahead_available = (future_end_idx - end) > 1
+        
+        if lookahead_available:
             prices_slice = self.features_mm[end:future_end_idx, self.price_column_idx]
             log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
-            volatility = torch.tensor(float(np.std(log_returns)), dtype=torch.float32)
+            vol_value = float(np.std(log_returns))
         else:
-            volatility = torch.tensor(0.0, dtype=torch.float32)
+            lookback_start = max(0, i - self.volatility_lookahead)
+            if i > lookback_start:
+                prices_slice = self.features_mm[lookback_start:i, self.price_column_idx]
+                if len(prices_slice) > 1:
+                    log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
+                    vol_value = float(np.std(log_returns))
+                else:
+                    vol_value = 0.0
+            else:
+                vol_value = 0.0
+        
+        volatility = torch.tensor(vol_value * 100.0, dtype=torch.float32)
 
         return {
             "input_sequence": masked_sequence,

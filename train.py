@@ -502,7 +502,6 @@ def main() -> None:
 
     logger.success("Training completed!", indent=0)
     
-    # Check if training produced valid losses
     import math
     if history['train_loss'] and history['val_loss']:
         last_train_loss = history['train_loss'][-1]
