@@ -105,20 +105,7 @@ class EnhancedPretrainEvaluator:
                 total_vol_loss += vol_loss_batch * batch_size
                 total_samples += batch_size
 
-                contrastive_seq = outputs.get("contrastive_embedding", None)
-                if contrastive_seq is not None:
-                    m = mask_binary
-                    valid = (~m.bool()) if m is not None else None
-                    if valid is not None:
-                        vf = valid.float().unsqueeze(-1)
-                        sum_emb = (contrastive_seq * vf).sum(dim=1)
-                        count = vf.sum(dim=1).clamp_min(1.0)
-                        mean_pool = sum_emb / count
-                    else:
-                        mean_pool = contrastive_seq.mean(dim=1)
-                    pooled_embedding = mean_pool
-                else:
-                    pooled_embedding = recon_seq.mean(dim=1)
+                pooled_embedding = recon_seq.mean(dim=1)
                 all_embeddings.append(pooled_embedding.cpu())
                 all_asset_ids.append(asset_id.cpu())
                 if vol_valid is not None:
@@ -148,6 +135,19 @@ class EnhancedPretrainEvaluator:
         all_asset_ids_cat = torch.cat(all_asset_ids, dim=0)
         all_pred_vols_cat = torch.cat(all_pred_vols, dim=0)
         all_true_vols_cat = torch.cat(all_true_vols, dim=0)
+
+        # Diagnostic logging for volatility
+        if len(all_true_vols_cat) > 0:
+            vol_target_np = all_true_vols_cat.squeeze().numpy()
+            vol_pred_np = all_pred_vols_cat.squeeze().numpy()
+            logger.info("Volatility Diagnostics:", indent=1)
+            logger.metric("Target Mean", f"{np.mean(vol_target_np):.6f}", indent=2)
+            logger.metric("Target Std", f"{np.std(vol_target_np):.6f}", indent=2)
+            logger.metric("Target Min/Max", f"{np.min(vol_target_np):.6f} / {np.max(vol_target_np):.6f}", indent=2)
+            logger.metric("Pred Mean", f"{np.mean(vol_pred_np):.6f}", indent=2)
+            logger.metric("Pred Std", f"{np.std(vol_pred_np):.6f}", indent=2)
+            logger.metric("Zeros in targets", f"{np.sum(vol_target_np == 0.0)} / {len(vol_target_np)} ({100*np.sum(vol_target_np == 0.0)/len(vol_target_np):.1f}%)", indent=2)
+            logger.blank_line()
 
         metrics = {
             "masked_reconstruction_mse": total_recon_loss / total_samples,
