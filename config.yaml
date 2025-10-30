@@ -41,11 +41,11 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 320
+    d_model: 270
     d_state: 16
     d_conv: 4
     n_layers: 8
-    dropout: 0.1
+    dropout: 0.2
     num_assets: 15
     asset_embedding_dim: 32
     reconstruction_head_dim: 16
@@ -54,11 +54,11 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 2
+    epochs: 1
     learning_rate: 0.0001
-    weight_decay: 0.01
+    weight_decay: 0.015
     optimizer: "adamw"
-    scheduler: "cosine"
+    scheduler: "constant"
     warmup_epochs: 0
     gradient_clip: 0.5
     accumulation_steps: 1
@@ -71,8 +71,8 @@ pretrain:
     volatility_weight: 1.5
     direction_weight: 0.5
     contrastive_weight: 0.5
-    temporal_consistency_weight: 0.15
-    temperature: 0.05
+    temporal_consistency_weight: 0.5
+    temperature: 0.15
 
 # Fine-tuning configuration for regression on 30min data
 finetune:
@@ -107,7 +107,7 @@ finetune:
   
   model:
     name: "MambaFineTuned"
-    d_model: 320
+    d_model: 270
     d_state: 16
     d_conv: 4
     n_layers: 8
