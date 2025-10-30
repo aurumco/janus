@@ -85,21 +85,23 @@ class PretrainWindowDataset(Dataset):
             log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
             vol_value = float(np.std(log_returns))
             volatility_valid = True
+            try:
+                if np.random.random() < 5e-4 and abs(vol_value) < 1e-8:
+                    print(f"[DEBUG] Volatility near zero at idx={idx} end={end}; lookahead={self.volatility_lookahead}")
+            except Exception:
+                pass
         else:
-            # No future window available → mark volatility target invalid to avoid leakage
             vol_value = 0.0
             volatility_valid = False
 
         volatility = torch.tensor(vol_value * 100.0, dtype=torch.float32)
 
-        # Direction target: 1 if next close > current close, else 0
-        close_idx = 3  # Assuming close is at index 3 (open=0, high=1, low=2, close=3)
+        close_idx = 3
         if end < self.n_timesteps:
             current_close = self.features_mm[end - 1, close_idx]
             next_close = self.features_mm[end, close_idx]
             direction = torch.tensor(1 if next_close > current_close else 0, dtype=torch.long)
         else:
-            # At the very end, use a neutral/random target
             direction = torch.tensor(0, dtype=torch.long)
 
         return {

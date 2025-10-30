@@ -10,10 +10,8 @@ tensorboard>=2.17.0
 pyarrow>=17.0.0
 mamba-ssm==2.2.2
 causal-conv1d==1.4.0
-torch==2.5.1
+torch==2.4.0+cu121
 pandas-ta-classic>=0.3.36
 arch>=7.2.0
 joblib>=1.5.2
 rich>=13.9.4
-imbalanced-learn>=0.12.0
-pyngrok>=7.4.0

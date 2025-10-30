@@ -215,6 +215,38 @@ def main():
         logger.success(f"Training curves saved to {curves_file}", indent=1)
     
     logger.success(f"Evaluation complete! Results saved to {output_dir}", indent=1)
+
+    try:
+        export_dir = output_dir / 'exports'
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        seq_len = pget('data.sequence_length', 72)
+        in_features = pget('data.num_features', 16)
+        batch_dim = 1
+
+        dummy_seq = torch.randn(batch_dim, seq_len, in_features, device=device)
+        dummy_asset = torch.zeros(batch_dim, dtype=torch.long, device=device)
+
+        model.eval()
+        onnx_path = export_dir / 'pretrain_model.onnx'
+        torch.onnx.export(
+            model,
+            (dummy_seq, dummy_asset),
+            str(onnx_path),
+            input_names=['input_sequence', 'asset_ids'],
+            output_names=['reconstructed_sequence', 'predicted_volatility', 'predicted_direction'],
+            dynamic_axes={'input_sequence': {0: 'batch', 1: 'seq'},
+                          'asset_ids': {0: 'batch'},
+                          'reconstructed_sequence': {0: 'batch', 1: 'seq'},
+                          'predicted_volatility': {0: 'batch'},
+                          'predicted_direction': {0: 'batch'}},
+            opset_version=17,
+            do_constant_folding=False,
+        )
+        logger.success(f"ONNX exported to {onnx_path}", indent=1)
+    except Exception as e:
+        logger.warning(f"ONNX export failed: {e}", indent=1)
+
     logger.info(f"Log file: {log_file}", indent=1)
     logger.close()
 
