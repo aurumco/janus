@@ -90,9 +90,20 @@ class PretrainLoss(nn.Module):
             if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
                 masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
 
-        volatility_loss = self.volatility_loss_fn(
-            predicted_volatility, volatility_target
-        )
+        vol_valid = batch.get("volatility_valid", None)
+        if vol_valid is not None:
+            vol_valid = vol_valid.to(predicted_volatility.device).view(-1)
+            pred_vol = predicted_volatility.view(-1)
+            true_vol = volatility_target.view(-1)
+            if vol_valid.any():
+                vloss_all = self.volatility_loss_fn(pred_vol[vol_valid], true_vol[vol_valid])
+                volatility_loss = vloss_all
+            else:
+                volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
+        else:
+            volatility_loss = self.volatility_loss_fn(
+                predicted_volatility, volatility_target
+            )
         if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
             volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
 

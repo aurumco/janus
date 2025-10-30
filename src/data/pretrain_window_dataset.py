@@ -79,23 +79,17 @@ class PretrainWindowDataset(Dataset):
 
         future_end_idx = min(end + self.volatility_lookahead, self.n_timesteps)
         lookahead_available = (future_end_idx - end) > 1
-        
+
         if lookahead_available:
             prices_slice = self.features_mm[end:future_end_idx, self.price_column_idx]
             log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
             vol_value = float(np.std(log_returns))
+            volatility_valid = True
         else:
-            lookback_start = max(0, i - self.volatility_lookahead)
-            if i > lookback_start:
-                prices_slice = self.features_mm[lookback_start:i, self.price_column_idx]
-                if len(prices_slice) > 1:
-                    log_returns = np.log((prices_slice[1:] + 1e-8) / (prices_slice[:-1] + 1e-8))
-                    vol_value = float(np.std(log_returns))
-                else:
-                    vol_value = 0.0
-            else:
-                vol_value = 0.0
-        
+            # No future window available → mark volatility target invalid to avoid leakage
+            vol_value = 0.0
+            volatility_valid = False
+
         volatility = torch.tensor(vol_value * 100.0, dtype=torch.float32)
 
         # Direction target: 1 if next close > current close, else 0
@@ -113,6 +107,7 @@ class PretrainWindowDataset(Dataset):
             "mask_binary": mask_binary,
             "original_sequence": original_sequence,
             "volatility_target": volatility.unsqueeze(0),
+            "volatility_valid": torch.tensor(volatility_valid, dtype=torch.bool),
             "direction_target": direction,
             "asset_id": asset_id,
         }

@@ -64,6 +64,7 @@ class EnhancedPretrainEvaluator:
                 mask_binary = batch["mask_binary"].to(self.device)
                 original_seq = batch["original_sequence"].to(self.device)
                 vol_target = batch["volatility_target"].to(self.device)
+                vol_valid = batch.get("volatility_valid", None)
                 asset_id = batch["asset_id"].to(self.device)
 
                 outputs = self.model(input_seq, asset_id)
@@ -82,11 +83,23 @@ class EnhancedPretrainEvaluator:
                 else:
                     recon_loss_batch = 0.0
 
-                vol_diff = (pred_vol - vol_target) ** 2
-                if torch.isnan(vol_diff).any() or torch.isinf(vol_diff).any():
-                    vol_loss_batch = 0.0
+                if vol_valid is not None:
+                    vv = vol_valid.to(self.device).view(-1, 1)
+                    if vv.any():
+                        vol_diff = (pred_vol - vol_target) ** 2
+                        vol_diff = vol_diff[vv]
+                        if torch.isnan(vol_diff).any() or torch.isinf(vol_diff).any():
+                            vol_loss_batch = 0.0
+                        else:
+                            vol_loss_batch = torch.mean(vol_diff).item()
+                    else:
+                        vol_loss_batch = 0.0
                 else:
-                    vol_loss_batch = torch.mean(vol_diff).item()
+                    vol_diff = (pred_vol - vol_target) ** 2
+                    if torch.isnan(vol_diff).any() or torch.isinf(vol_diff).any():
+                        vol_loss_batch = 0.0
+                    else:
+                        vol_loss_batch = torch.mean(vol_diff).item()
 
                 total_recon_loss += recon_loss_batch * batch_size
                 total_vol_loss += vol_loss_batch * batch_size
@@ -95,8 +108,14 @@ class EnhancedPretrainEvaluator:
                 pooled_embedding = recon_seq.mean(dim=1)
                 all_embeddings.append(pooled_embedding.cpu())
                 all_asset_ids.append(asset_id.cpu())
-                all_pred_vols.append(pred_vol.cpu())
-                all_true_vols.append(vol_target.cpu())
+                if vol_valid is not None:
+                    vv_cpu = vol_valid.view(-1, 1)
+                    if vv_cpu.any():
+                        all_pred_vols.append(pred_vol[vv_cpu].cpu())
+                        all_true_vols.append(vol_target[vv_cpu].cpu())
+                else:
+                    all_pred_vols.append(pred_vol.cpu())
+                    all_true_vols.append(vol_target.cpu())
                 
                 if pred_dir is not None and "direction_target" in batch:
                     all_pred_directions.append(pred_dir.argmax(dim=1).cpu())
