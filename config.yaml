@@ -26,15 +26,15 @@ pretrain:
     sequence_length: 72
     batch_size: 256
     num_features: 16
-    stride: 8
+    stride: 2
     use_gpu_preprocess: true
     masking_ratio: 0.15
     volatility_lookahead: 60
     smart_masking_prob: 0.4
     cross_asset_masking_prob: 0.3
-    train_ratio: 0.7
+    train_ratio: 0.75
     val_ratio: 0.2
-    test_ratio: 0.1
+    test_ratio: 0.05
     num_workers: 4
     shuffle_train: true
     use_streaming_fallback: false
@@ -45,7 +45,7 @@ pretrain:
     d_state: 16
     d_conv: 4
     n_layers: 8
-    dropout: 0.35
+    dropout: 0.3
     num_assets: 15
     asset_embedding_dim: 64
     reconstruction_head_dim: 16
@@ -54,12 +54,12 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 2
+    epochs: 1
     learning_rate: 0.00005
-    weight_decay: 0.02
+    weight_decay: 0.05
     optimizer: "adamw"
     scheduler: "cosine"
-    warmup_epochs: 5
+    warmup_epochs: 1
     gradient_clip: 0.5
     accumulation_steps: 1
     early_stopping_patience: 5
