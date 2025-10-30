@@ -88,9 +88,6 @@ class PretrainWindowDataset(Dataset):
             
             vol_value = float(np.std(returns) + 1e-6)
             volatility_valid = True
-            
-            if idx % 1000 == 0:
-                print(f"[DEBUG idx={idx}] Volatility: {vol_value:.6f}, Returns mean: {np.mean(returns):.6f}, Returns std: {np.std(returns):.6f}")
         else:
             vol_value = 0.0
             volatility_valid = False

@@ -56,9 +56,6 @@ class EnhancedPretrainEvaluator:
 
         logger.info(f"Evaluating on {min(len(dataloader), max_batches)} batches", indent=1)
         
-        vol_target_values = []
-        vol_pred_values = []
-        
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=min(len(dataloader), max_batches))):
                 if batch_idx >= max_batches:
@@ -116,15 +113,9 @@ class EnhancedPretrainEvaluator:
                     if vv_cpu.any():
                         all_pred_vols.append(pred_vol[vv_cpu].cpu())
                         all_true_vols.append(vol_target[vv_cpu].cpu())
-
-                        vol_target_values.extend(vol_target[vv_cpu].cpu().numpy().flatten().tolist())
-                        vol_pred_values.extend(pred_vol[vv_cpu].cpu().numpy().flatten().tolist())
                 else:
                     all_pred_vols.append(pred_vol.cpu())
                     all_true_vols.append(vol_target.cpu())
-
-                    vol_target_values.extend(vol_target.cpu().numpy().flatten().tolist())
-                    vol_pred_values.extend(pred_vol.cpu().numpy().flatten().tolist())
                 
                 if pred_dir is not None and "direction_target" in batch:
                     all_pred_directions.append(pred_dir.argmax(dim=1).cpu())
@@ -144,17 +135,6 @@ class EnhancedPretrainEvaluator:
         all_asset_ids_cat = torch.cat(all_asset_ids, dim=0)
         all_pred_vols_cat = torch.cat(all_pred_vols, dim=0)
         all_true_vols_cat = torch.cat(all_true_vols, dim=0)
-        
-        if len(vol_target_values) > 0:
-            vol_target_array = np.array(vol_target_values)
-            vol_pred_array = np.array(vol_pred_values)
-            logger.info("Volatility Target Statistics:", indent=1)
-            logger.metric("Mean", f"{np.mean(vol_target_array):.6f}", indent=2)
-            logger.metric("Std", f"{np.std(vol_target_array):.6f}", indent=2)
-            logger.metric("Min", f"{np.min(vol_target_array):.6f}", indent=2)
-            logger.metric("Max", f"{np.max(vol_target_array):.6f}", indent=2)
-            logger.metric("Zeros", f"{np.sum(vol_target_array == 0.0)} / {len(vol_target_array)} ({100*np.sum(vol_target_array == 0.0)/len(vol_target_array):.2f}%)", indent=2)
-            logger.blank_line()
 
         metrics = {
             "masked_reconstruction_mse": total_recon_loss / total_samples,
