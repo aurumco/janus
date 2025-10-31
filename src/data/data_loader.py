@@ -47,7 +47,7 @@ class DataLoaderFactory:
         batch_size: int = 32,
         num_workers: int = 4,
         shuffle_train: bool = True,
-        random_seed: int = 42,
+        random_seed: int = 87,
         masking_ratio: float = 0.15,
         volatility_lookahead: int = 60,
         sequence_length: int = 96,

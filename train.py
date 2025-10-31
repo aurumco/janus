@@ -105,7 +105,7 @@ def main() -> None:
     # Load full config
     full_config = ConfigLoader(args.config)
 
-    set_seed(full_config.get('seed', 42))
+    set_seed(full_config.get('seed', 87))
 
 
     device = get_device(
@@ -196,7 +196,7 @@ def main() -> None:
             batch_size=config.get('data.batch_size'),
             num_workers=config.get('data.num_workers'),
             shuffle_train=config.get('data.shuffle_train'),
-            random_seed=full_config.get('seed', 42),
+            random_seed=full_config.get('seed', 87),
             masking_ratio=config.get('data.masking_ratio', 0.15),
             volatility_lookahead=config.get('data.volatility_lookahead', 60),
             sequence_length=config.get('data.sequence_length'),
@@ -224,7 +224,7 @@ def main() -> None:
             batch_size=config.get('data.batch_size'),
             num_workers=config.get('data.num_workers'),
             shuffle_train=config.get('data.shuffle_train'),
-            random_seed=full_config.get('seed', 42),
+            random_seed=full_config.get('seed', 87),
             sequence_length=config.get('data.sequence_length'),
             use_gpu_preprocess=use_gpu_pre,
             use_streaming_fallback=use_streaming_fallback,

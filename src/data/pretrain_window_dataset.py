@@ -80,7 +80,7 @@ class PretrainWindowDataset(Dataset):
         
         # Data augmentation: add Gaussian noise to training data (50% prob)
         if not self.deterministic and np.random.random() < 0.5:
-            noise = torch.randn_like(original_sequence) * 0.01
+            noise = torch.randn_like(original_sequence) * 0.02
             original_sequence = original_sequence + noise
         
         asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)
