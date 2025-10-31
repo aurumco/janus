@@ -99,7 +99,7 @@ class PretrainLoss(nn.Module):
                 if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
                     masked_price_loss = torch.tensor(0.0, device=per_elem.device)
         else:
-            masked_price_loss = torch.tensor(0.0, device=next(self.parameters()).device)
+            masked_price_loss = torch.tensor(0.0, device=self._infer_device(model_outputs, batch))
 
         if predicted_volatility is not None and volatility_target is not None:
             vol_valid = batch.get("volatility_valid", None)
@@ -119,14 +119,14 @@ class PretrainLoss(nn.Module):
             if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
                 volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
         else:
-            volatility_loss = torch.tensor(0.0, device=next(self.parameters()).device)
+            volatility_loss = torch.tensor(0.0, device=self._infer_device(model_outputs, batch))
 
         if predicted_direction is not None and direction_target is not None:
             direction_loss = self.direction_loss_fn(predicted_direction, direction_target)
             if torch.isnan(direction_loss) or torch.isinf(direction_loss):
                 direction_loss = torch.tensor(0.0, device=predicted_direction.device)
         else:
-            direction_loss = torch.tensor(0.0, device=next(self.parameters()).device)
+            direction_loss = torch.tensor(0.0, device=self._infer_device(model_outputs, batch))
 
         total_loss = (
             self.masked_price_weight * masked_price_loss
@@ -158,12 +158,32 @@ class PretrainLoss(nn.Module):
             if sequence_for_temp is not None:
                 temporal_loss = self._temporal_consistency_loss(sequence_for_temp)
                 if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
-                    temporal_loss = torch.tensor(0.0, device=sequence_for_temp.device)
+                    temporal_loss = torch.tensor(0.0, device=self._infer_device(model_outputs, batch))
                 total_loss = total_loss + self.temporal_consistency_weight * temporal_loss
                 loss_dict["temporal_consistency_loss"] = temporal_loss
 
         loss_dict["total_loss"] = total_loss
         return loss_dict
+
+    def _infer_device(self, model_outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]) -> torch.device:
+        """Infer a CUDA/CPU device from any available tensor in outputs or batch.
+
+        Tries, in order: reconstructed_sequence, predicted_volatility, hidden_states,
+        original_sequence, mask_binary, volatility_target, direction_target.
+        """
+        candidates = [
+            model_outputs.get("reconstructed_sequence"),
+            model_outputs.get("predicted_volatility"),
+            model_outputs.get("hidden_states"),
+            batch.get("original_sequence"),
+            batch.get("mask_binary"),
+            batch.get("volatility_target"),
+            batch.get("direction_target"),
+        ]
+        for t in candidates:
+            if t is not None:
+                return t.device
+        return torch.device("cpu")
 
     def _contrastive_loss(
         self, embeddings: torch.Tensor, asset_ids: torch.Tensor
