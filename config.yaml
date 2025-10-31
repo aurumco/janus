@@ -24,7 +24,7 @@ pretrain:
   data:
     path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
     sequence_length: 72
-    batch_size: 128
+    batch_size: 256
     num_features: 16
     stride: 4
     use_gpu_preprocess: true
@@ -41,7 +41,7 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 240
+    d_model: 320
     d_state: 16
     d_conv: 4
     n_layers: 8
@@ -52,7 +52,7 @@ pretrain:
     volatility_head_dim: 1
     enable_reconstruction_head: true
     enable_volatility_head: true
-    enable_direction_head: false
+    enable_direction_head: true
     use_gradient_checkpointing: false
   
   training:
@@ -60,7 +60,7 @@ pretrain:
     learning_rate: 0.0001
     weight_decay: 0.01
     optimizer: "adamw"
-    scheduler: "cosine"
+    scheduler: "constant"
     warmup_epochs: 0
     gradient_clip: 0.5
     accumulation_steps: 1
@@ -109,7 +109,7 @@ finetune:
   
   model:
     name: "MambaFineTuned"
-    d_model: 240
+    d_model: 320
     d_state: 16
     d_conv: 4
     n_layers: 8

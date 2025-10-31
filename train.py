@@ -447,8 +447,9 @@ def main() -> None:
     scheduler_type = config.get('training.scheduler', 'reduce_on_plateau')
     if scheduler_type == 'cosine':
         total_epochs = config.get('training.epochs')
-        scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs)
-        logger.info(f"Scheduler: CosineAnnealingLR (T_max={total_epochs})", indent=1)
+        eta_min = config.get('training.learning_rate') * 0.1  # Keep 10% of LR minimum
+        scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs, eta_min=eta_min)
+        logger.info(f"Scheduler: CosineAnnealingLR (T_max={total_epochs}, eta_min={eta_min:.2e})", indent=1)
     elif scheduler_type == 'constant' or scheduler_type == 'none':
         scheduler = None
         logger.info("Scheduler: None (constant LR)", indent=1)
