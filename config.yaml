@@ -50,7 +50,7 @@ pretrain:
     asset_embedding_dim: 32
     reconstruction_head_dim: 16
     volatility_head_dim: 1
-    enable_direction_head: true
+    enable_direction_head: false
     use_gradient_checkpointing: false
   
   training:
