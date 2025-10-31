@@ -248,6 +248,7 @@ class DataLoaderFactory:
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
                         stride=self.stride,
+                        deterministic=True,
                     )
                     test_dataset = PretrainWindowDataset(
                         features_memmap_path=features_path,
@@ -262,6 +263,7 @@ class DataLoaderFactory:
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
                         stride=self.stride,
+                        deterministic=True,
                     )
                 else:
                     train_dataset = PretrainDataset(

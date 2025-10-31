@@ -28,6 +28,7 @@ class PretrainWindowDataset(Dataset):
         cross_asset_masking_prob: float = 0.3,
         price_column_idx: int = 0,
         stride: int = 4,
+        deterministic: bool = False,
     ) -> None:
         self.features_mm = np.memmap(
             features_memmap_path, dtype=np.float32, mode="r", shape=(n_timesteps, n_features)
@@ -61,15 +62,26 @@ class PretrainWindowDataset(Dataset):
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
         self.price_column_idx = price_column_idx
+        self.deterministic = deterministic
 
     def __len__(self) -> int:
         return self.n_samples
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        # Seed RNG for deterministic validation
+        if self.deterministic:
+            np.random.seed(idx)
+            torch.manual_seed(idx)
+        
         i = self.start_index + (idx * self.stride)
         end = i + self.sequence_length
 
         original_sequence = torch.from_numpy(self.features_mm[i:end, :].copy())
+        
+        # Data augmentation: add Gaussian noise to training data (50% prob)
+        if not self.deterministic and np.random.random() < 0.5:
+            noise = torch.randn_like(original_sequence) * 0.01
+            original_sequence = original_sequence + noise
         
         asset_id = torch.tensor(int(self.asset_ids_mm[end - 1]), dtype=torch.long)
 
