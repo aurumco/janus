@@ -209,10 +209,12 @@ def main():
     if 'history' in checkpoint:
         logger.info("Generating training curves from checkpoint history", indent=1)
         visualizer = MetricsVisualizer()
-        curves_file = output_dir / 'training_curves.png'
-        logger.info(f"Saving curves to {curves_file}", indent=1)
-        visualizer.save_training_curves(checkpoint, str(curves_file))
-        logger.success(f"Training curves saved to {curves_file}", indent=1)
+        logger.info(f"Saving curves to {output_dir}/training_curves.png", indent=1)
+        if 'history' in checkpoint:
+            visualizer.plot_training_curves(checkpoint['history'], output_dir)
+            logger.success(f"Training curves saved to {output_dir}/training_curves.png", indent=1)
+        else:
+            logger.warning("No training history found in checkpoint", indent=1)
     
     logger.success(f"Evaluation complete! Results saved to {output_dir}", indent=1)
 

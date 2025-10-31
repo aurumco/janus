@@ -72,7 +72,15 @@ class PretrainLoss(nn.Module):
         volatility_target = batch.get("volatility_target", None)
         direction_target = batch.get("direction_target", None)
 
-        batch_size = reconstructed_sequence.size(0)
+        # Get batch_size from available tensors
+        if original_sequence is not None:
+            batch_size = original_sequence.size(0)
+        elif mask_binary is not None:
+            batch_size = mask_binary.size(0)
+        elif reconstructed_sequence is not None:
+            batch_size = reconstructed_sequence.size(0)
+        else:
+            batch_size = 1
 
         if reconstructed_sequence is not None and original_sequence is not None and mask_binary is not None:
             if isinstance(self.reconstruction_loss_fn, nn.HuberLoss):
@@ -118,7 +126,7 @@ class PretrainLoss(nn.Module):
             if torch.isnan(direction_loss) or torch.isinf(direction_loss):
                 direction_loss = torch.tensor(0.0, device=predicted_direction.device)
         else:
-            direction_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
+            direction_loss = torch.tensor(0.0, device=next(self.parameters()).device)
 
         total_loss = (
             self.masked_price_weight * masked_price_loss
@@ -133,20 +141,26 @@ class PretrainLoss(nn.Module):
         }
 
         if self.contrastive_weight > 0 and "asset_id" in batch:
-            contrastive_loss = self._contrastive_loss(
-                reconstructed_sequence, batch["asset_id"]
-            )
-            if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
-                contrastive_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
-            total_loss = total_loss + self.contrastive_weight * contrastive_loss
-            loss_dict["contrastive_loss"] = contrastive_loss
+            # Use hidden_states if available, otherwise reconstructed_sequence
+            embeddings = model_outputs.get("hidden_states", reconstructed_sequence)
+            if embeddings is not None:
+                contrastive_loss = self._contrastive_loss(
+                    embeddings, batch["asset_id"]
+                )
+                if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
+                    contrastive_loss = torch.tensor(0.0, device=embeddings.device)
+                total_loss = total_loss + self.contrastive_weight * contrastive_loss
+                loss_dict["contrastive_loss"] = contrastive_loss
 
         if self.temporal_consistency_weight > 0:
-            temporal_loss = self._temporal_consistency_loss(reconstructed_sequence)
-            if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
-                temporal_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
-            total_loss = total_loss + self.temporal_consistency_weight * temporal_loss
-            loss_dict["temporal_consistency_loss"] = temporal_loss
+            # Use hidden_states if available, otherwise reconstructed_sequence
+            sequence_for_temp = model_outputs.get("hidden_states", reconstructed_sequence)
+            if sequence_for_temp is not None:
+                temporal_loss = self._temporal_consistency_loss(sequence_for_temp)
+                if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
+                    temporal_loss = torch.tensor(0.0, device=sequence_for_temp.device)
+                total_loss = total_loss + self.temporal_consistency_weight * temporal_loss
+                loss_dict["temporal_consistency_loss"] = temporal_loss
 
         loss_dict["total_loss"] = total_loss
         return loss_dict

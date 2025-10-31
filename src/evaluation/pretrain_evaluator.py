@@ -106,7 +106,15 @@ class EnhancedPretrainEvaluator:
                     total_vol_loss += vol_loss_batch * batch_size
                 total_samples += batch_size
 
-                pooled_embedding = recon_seq.mean(dim=1)
+                # Use hidden_states for embeddings if available, fallback to recon_seq
+                hidden_states = outputs.get("hidden_states", None)
+                if hidden_states is not None:
+                    pooled_embedding = hidden_states.mean(dim=1)
+                elif recon_seq is not None:
+                    pooled_embedding = recon_seq.mean(dim=1)
+                else:
+                    # Fallback: use input sequence if no heads are enabled
+                    pooled_embedding = input_seq.mean(dim=1)
                 all_embeddings.append(pooled_embedding.cpu())
                 all_asset_ids.append(asset_id.cpu())
                 if pred_vol is not None and vol_valid is not None:
