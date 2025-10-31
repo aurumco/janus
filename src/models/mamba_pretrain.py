@@ -25,6 +25,8 @@ class MambaPretrainModel(nn.Module):
         asset_embedding_dim: int = 32,
         use_gradient_checkpointing: bool = False,
         enable_direction_head: bool = True,
+        enable_reconstruction_head: bool = True,
+        enable_volatility_head: bool = True,
     ) -> None:
         """Initialize Mamba pre-training model.
 
@@ -50,6 +52,8 @@ class MambaPretrainModel(nn.Module):
         self.asset_embedding_dim = asset_embedding_dim
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.enable_direction_head = enable_direction_head
+        self.enable_reconstruction_head = enable_reconstruction_head
+        self.enable_volatility_head = enable_volatility_head
 
         if asset_embedding_dim > 0:
             self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
@@ -77,15 +81,21 @@ class MambaPretrainModel(nn.Module):
             [nn.LayerNorm(d_model) for _ in range(n_layers)]
         )
 
-        self.reconstruction_head = nn.Linear(d_model, reconstruction_head_dim)
+        if self.enable_reconstruction_head:
+            self.reconstruction_head = nn.Linear(d_model, reconstruction_head_dim)
+        else:
+            self.reconstruction_head = None
 
-        self.volatility_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, volatility_head_dim),
-            nn.Softplus(),
-        )
+        if self.enable_volatility_head:
+            self.volatility_head = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model // 2, volatility_head_dim),
+                nn.Softplus(),
+            )
+        else:
+            self.volatility_head = None
 
         if self.enable_direction_head:
             self.direction_head = nn.Sequential(
@@ -127,15 +137,17 @@ class MambaPretrainModel(nn.Module):
             else:
                 x = x + mamba_layer(layer_norm(x))
 
-        reconstructed_sequence = self.reconstruction_head(x)
+        output = {}
+
+        if self.reconstruction_head is not None:
+            reconstructed_sequence = self.reconstruction_head(x)
+            output["reconstructed_sequence"] = reconstructed_sequence
 
         last_hidden = x[:, -1, :]
-        predicted_volatility = self.volatility_head(last_hidden)
-
-        output = {
-            "reconstructed_sequence": reconstructed_sequence,
-            "predicted_volatility": predicted_volatility,
-        }
+        if self.volatility_head is not None:
+            predicted_volatility = self.volatility_head(last_hidden)
+            output["predicted_volatility"] = predicted_volatility
+        output["hidden_states"] = x
 
         if self.enable_direction_head:
             predicted_direction = self.direction_head(last_hidden)

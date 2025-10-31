@@ -273,6 +273,9 @@ def main() -> None:
             num_assets=config.get('model.num_assets', 15),
             asset_embedding_dim=config.get('model.asset_embedding_dim', 16),
             use_gradient_checkpointing=config.get('model.use_gradient_checkpointing', False),
+            enable_direction_head=config.get('model.enable_direction_head', True),
+            enable_reconstruction_head=config.get('model.enable_reconstruction_head', True),
+            enable_volatility_head=config.get('model.enable_volatility_head', True),
         )
     else:
         checkpoint_path = None
@@ -446,6 +449,9 @@ def main() -> None:
         total_epochs = config.get('training.epochs')
         scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs)
         logger.info(f"Scheduler: CosineAnnealingLR (T_max={total_epochs})", indent=1)
+    elif scheduler_type == 'constant' or scheduler_type == 'none':
+        scheduler = None
+        logger.info("Scheduler: None (constant LR)", indent=1)
     else:
         scheduler = ReduceLROnPlateau(
             optimizer,

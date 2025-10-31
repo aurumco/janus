@@ -68,22 +68,24 @@ class EnhancedPretrainEvaluator:
                 asset_id = batch["asset_id"].to(self.device)
 
                 outputs = self.model(input_seq, asset_id)
-                recon_seq = outputs["reconstructed_sequence"]
-                pred_vol = outputs["predicted_volatility"]
+                recon_seq = outputs.get("reconstructed_sequence", None)
+                pred_vol = outputs.get("predicted_volatility", None)
                 pred_dir = outputs.get("predicted_direction", None)
 
                 batch_size = input_seq.size(0)
                 
-                mask_exp = mask_binary.unsqueeze(-1).expand_as(recon_seq)
-                masked_recon = recon_seq[mask_exp]
-                masked_orig = original_seq[mask_exp]
-                
-                if masked_recon.numel() > 0:
-                    recon_loss_batch = torch.mean((masked_recon - masked_orig) ** 2).item()
-                else:
-                    recon_loss_batch = 0.0
+                if recon_seq is not None:
+                    mask_exp = mask_binary.unsqueeze(-1).expand_as(recon_seq)
+                    masked_recon = recon_seq[mask_exp]
+                    masked_orig = original_seq[mask_exp]
+                    
+                    if masked_recon.numel() > 0:
+                        recon_loss_batch = torch.mean((masked_recon - masked_orig) ** 2).item()
+                    else:
+                        recon_loss_batch = 0.0
+                    total_recon_loss += recon_loss_batch * batch_size
 
-                if vol_valid is not None:
+                if pred_vol is not None and vol_valid is not None:
                     vv = vol_valid.to(self.device).view(-1, 1)
                     if vv.any():
                         vol_diff = (pred_vol - vol_target) ** 2
@@ -94,26 +96,25 @@ class EnhancedPretrainEvaluator:
                             vol_loss_batch = torch.mean(vol_diff).item()
                     else:
                         vol_loss_batch = 0.0
-                else:
+                elif pred_vol is not None:
                     vol_diff = (pred_vol - vol_target) ** 2
                     if torch.isnan(vol_diff).any() or torch.isinf(vol_diff).any():
                         vol_loss_batch = 0.0
                     else:
                         vol_loss_batch = torch.mean(vol_diff).item()
-
-                total_recon_loss += recon_loss_batch * batch_size
-                total_vol_loss += vol_loss_batch * batch_size
+                if pred_vol is not None:
+                    total_vol_loss += vol_loss_batch * batch_size
                 total_samples += batch_size
 
                 pooled_embedding = recon_seq.mean(dim=1)
                 all_embeddings.append(pooled_embedding.cpu())
                 all_asset_ids.append(asset_id.cpu())
-                if vol_valid is not None:
+                if pred_vol is not None and vol_valid is not None:
                     vv_cpu = vol_valid.view(-1, 1)
                     if vv_cpu.any():
                         all_pred_vols.append(pred_vol[vv_cpu].cpu())
                         all_true_vols.append(vol_target[vv_cpu].cpu())
-                else:
+                elif pred_vol is not None:
                     all_pred_vols.append(pred_vol.cpu())
                     all_true_vols.append(vol_target.cpu())
                 
@@ -140,7 +141,7 @@ class EnhancedPretrainEvaluator:
         if len(all_true_vols_cat) > 0:
             vol_target_np = all_true_vols_cat.squeeze().numpy()
             vol_pred_np = all_pred_vols_cat.squeeze().numpy()
-            logger.info("Volatility Diagnostics:", indent=1)
+            logger.info("\nVolatility:", indent=1)
             logger.metric("Target Mean", f"{np.mean(vol_target_np):.6f}", indent=2)
             logger.metric("Target Std", f"{np.std(vol_target_np):.6f}", indent=2)
             logger.metric("Target Min/Max", f"{np.min(vol_target_np):.6f} / {np.max(vol_target_np):.6f}", indent=2)
@@ -149,10 +150,11 @@ class EnhancedPretrainEvaluator:
             logger.metric("Zeros in targets", f"{np.sum(vol_target_np == 0.0)} / {len(vol_target_np)} ({100*np.sum(vol_target_np == 0.0)/len(vol_target_np):.1f}%)", indent=2)
             logger.blank_line()
 
-        metrics = {
-            "masked_reconstruction_mse": total_recon_loss / total_samples,
-            "volatility_mse": total_vol_loss / total_samples,
-        }
+        metrics = {}
+        if total_recon_loss > 0:
+            metrics["masked_reconstruction_mse"] = total_recon_loss / total_samples
+        if total_vol_loss > 0:
+            metrics["volatility_mse"] = total_vol_loss / total_samples
 
         embedding_quality = self._evaluate_embedding_quality(
             all_embeddings_cat, all_asset_ids_cat
@@ -172,8 +174,6 @@ class EnhancedPretrainEvaluator:
             all_true_dir_cat = torch.cat(all_true_directions, dim=0)
             direction_accuracy = (all_pred_dir_cat == all_true_dir_cat).float().mean().item()
             metrics["direction_accuracy"] = direction_accuracy
-        else:
-            metrics["direction_accuracy"] = 0.0
 
         return metrics
 
@@ -250,20 +250,23 @@ class EnhancedPretrainEvaluator:
 
     def print_metrics(self, metrics: Dict[str, float]) -> None:
         logger.blank_line()
-        logger.info("Reconstruction Performance:", indent=1)
-        logger.metric("Masked Reconstruction MSE", f"{metrics.get('masked_reconstruction_mse', 0):.6f}", indent=2)
+        if 'masked_reconstruction_mse' in metrics:
+            logger.info("Reconstruction Performance:", indent=1)
+            logger.metric("Masked Reconstruction MSE", f"{metrics.get('masked_reconstruction_mse', 0):.6f}", indent=2)
 
         logger.blank_line()
-        logger.info("Volatility Prediction:", indent=1)
-        vol_mse = metrics.get('volatility_mse', 0)
-        vol_mse_str = "nan" if (vol_mse != vol_mse or vol_mse == float('inf')) else f"{vol_mse:.6f}"
-        logger.metric("Volatility MSE", vol_mse_str, indent=2)
-        logger.metric("Volatility Correlation", f"{metrics.get('volatility_correlation', 0):.4f}", indent=2)
+        if 'volatility_mse' in metrics:
+            logger.info("Volatility Prediction:", indent=1)
+            vol_mse = metrics.get('volatility_mse', 0)
+            vol_mse_str = "nan" if (vol_mse != vol_mse or vol_mse == float('inf')) else f"{vol_mse:.6f}"
+            logger.metric("Volatility MSE", vol_mse_str, indent=2)
+            logger.metric("Volatility Correlation", f"{metrics.get('volatility_correlation', 0):.4f}", indent=2)
 
         logger.blank_line()
-        logger.info("Direction Prediction:", indent=1)
-        dir_acc = metrics.get('direction_accuracy', 0)
-        logger.metric("Accuracy", f"{dir_acc:.4f} ({dir_acc*100:.2f}%)", indent=2)
+        if 'direction_accuracy' in metrics:
+            logger.info("Direction Prediction:", indent=1)
+            dir_acc = metrics['direction_accuracy']
+            logger.metric("Accuracy", f"{dir_acc:.4f} ({dir_acc*100:.2f}%)", indent=2)
 
         logger.blank_line()
         logger.info("Embedding Quality:", indent=1)

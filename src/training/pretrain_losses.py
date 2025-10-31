@@ -63,49 +63,55 @@ class PretrainLoss(nn.Module):
         Returns:
             Dictionary with total loss and individual loss components.
         """
-        reconstructed_sequence = model_outputs["reconstructed_sequence"]
-        predicted_volatility = model_outputs["predicted_volatility"]
+        reconstructed_sequence = model_outputs.get("reconstructed_sequence", None)
+        predicted_volatility = model_outputs.get("predicted_volatility", None)
         predicted_direction = model_outputs.get("predicted_direction", None)
 
-        mask_binary = batch["mask_binary"]
-        original_sequence = batch["original_sequence"]
-        volatility_target = batch["volatility_target"]
+        mask_binary = batch.get("mask_binary", None)
+        original_sequence = batch.get("original_sequence", None)
+        volatility_target = batch.get("volatility_target", None)
         direction_target = batch.get("direction_target", None)
 
         batch_size = reconstructed_sequence.size(0)
 
-        if isinstance(self.reconstruction_loss_fn, nn.HuberLoss):
-            per_elem = torch.nn.functional.smooth_l1_loss(
-                reconstructed_sequence, original_sequence, reduction="none", beta=self.reconstruction_loss_fn.delta
-            )
-        else:
-            per_elem = (reconstructed_sequence - original_sequence) ** 2
-
-        mask_exp = mask_binary.unsqueeze(-1).expand_as(per_elem)
-        masked_losses = per_elem[mask_exp]
-        if masked_losses.numel() == 0:
-            masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
-        else:
-            masked_price_loss = masked_losses.mean()
-            if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
-                masked_price_loss = torch.tensor(0.0, device=reconstructed_sequence.device)
-
-        vol_valid = batch.get("volatility_valid", None)
-        if vol_valid is not None:
-            vol_valid = vol_valid.to(predicted_volatility.device).view(-1)
-            pred_vol = predicted_volatility.view(-1)
-            true_vol = volatility_target.view(-1)
-            if vol_valid.any():
-                vloss_all = self.volatility_loss_fn(pred_vol[vol_valid], true_vol[vol_valid])
-                volatility_loss = vloss_all
+        if reconstructed_sequence is not None and original_sequence is not None and mask_binary is not None:
+            if isinstance(self.reconstruction_loss_fn, nn.HuberLoss):
+                per_elem = torch.nn.functional.smooth_l1_loss(
+                    reconstructed_sequence, original_sequence, reduction="none", beta=self.reconstruction_loss_fn.delta
+                )
             else:
+                per_elem = (reconstructed_sequence - original_sequence) ** 2
+
+            mask_exp = mask_binary.unsqueeze(-1).expand_as(per_elem)
+            masked_losses = per_elem[mask_exp]
+            if masked_losses.numel() == 0:
+                masked_price_loss = torch.tensor(0.0, device=per_elem.device)
+            else:
+                masked_price_loss = masked_losses.mean()
+                if torch.isnan(masked_price_loss) or torch.isinf(masked_price_loss):
+                    masked_price_loss = torch.tensor(0.0, device=per_elem.device)
+        else:
+            masked_price_loss = torch.tensor(0.0, device=next(self.parameters()).device)
+
+        if predicted_volatility is not None and volatility_target is not None:
+            vol_valid = batch.get("volatility_valid", None)
+            if vol_valid is not None:
+                vol_valid = vol_valid.to(predicted_volatility.device).view(-1)
+                pred_vol = predicted_volatility.view(-1)
+                true_vol = volatility_target.view(-1)
+                if vol_valid.any():
+                    vloss_all = self.volatility_loss_fn(pred_vol[vol_valid], true_vol[vol_valid])
+                    volatility_loss = vloss_all
+                else:
+                    volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
+            else:
+                volatility_loss = self.volatility_loss_fn(
+                    predicted_volatility, volatility_target
+                )
+            if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
                 volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
         else:
-            volatility_loss = self.volatility_loss_fn(
-                predicted_volatility, volatility_target
-            )
-        if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
-            volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
+            volatility_loss = torch.tensor(0.0, device=next(self.parameters()).device)
 
         if predicted_direction is not None and direction_target is not None:
             direction_loss = self.direction_loss_fn(predicted_direction, direction_target)
