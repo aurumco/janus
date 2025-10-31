@@ -52,7 +52,7 @@ pretrain:
     volatility_head_dim: 1
     enable_reconstruction_head: true
     enable_volatility_head: true
-    enable_direction_head: true
+    enable_direction_head: false
     use_gradient_checkpointing: false
   
   training:
