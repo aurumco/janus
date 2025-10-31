@@ -56,7 +56,7 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 20
+    epochs: 1
     learning_rate: 0.00005
     weight_decay: 0.05
     optimizer: "adamw"
