@@ -141,8 +141,8 @@ class PretrainLoss(nn.Module):
         }
 
         if self.contrastive_weight > 0 and "asset_id" in batch:
-            # Use hidden_states if available, otherwise reconstructed_sequence
-            embeddings = model_outputs.get("hidden_states", reconstructed_sequence)
+            # Prefer reconstruction embeddings to align with evaluator; fallback to hidden_states
+            embeddings = reconstructed_sequence if reconstructed_sequence is not None else model_outputs.get("hidden_states", None)
             if embeddings is not None:
                 contrastive_loss = self._contrastive_loss(
                     embeddings, batch["asset_id"]
@@ -153,8 +153,8 @@ class PretrainLoss(nn.Module):
                 loss_dict["contrastive_loss"] = contrastive_loss
 
         if self.temporal_consistency_weight > 0:
-            # Use hidden_states if available, otherwise reconstructed_sequence
-            sequence_for_temp = model_outputs.get("hidden_states", reconstructed_sequence)
+            # Prefer reconstruction sequence; fallback to hidden_states if recon disabled
+            sequence_for_temp = reconstructed_sequence if reconstructed_sequence is not None else model_outputs.get("hidden_states", None)
             if sequence_for_temp is not None:
                 temporal_loss = self._temporal_consistency_loss(sequence_for_temp)
                 if torch.isnan(temporal_loss) or torch.isinf(temporal_loss):
