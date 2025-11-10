@@ -193,11 +193,12 @@ class DataHealthAnalyzer:
         
         return highly_skewed, skew_df
     
-    def apply_transformations(self, skewed_features: List[str]) -> pd.DataFrame:
+    def apply_transformations(self, skewed_features: List[str], target_column: str = None) -> pd.DataFrame:
         """Apply log transformation to skewed features.
         
         Args:
             skewed_features: List of feature names to transform
+            target_column: Name of target column (will be excluded from transformation)
             
         Returns:
             DataFrame with new log-transformed columns
@@ -208,8 +209,19 @@ class DataHealthAnalyzer:
         
         df_transformed = self.df.copy()
         transformed_cols = []
+        skipped_features = []
         
         for feat in skewed_features:
+            if target_column and feat == target_column:
+                self.log(f"  ⚠ Skipping {feat} (target variable - must not be transformed)")
+                skipped_features.append(feat)
+                continue
+            
+            if feat not in df_transformed.columns:
+                self.log(f"  ⚠ Skipping {feat} (not found in dataset - may have been dropped)")
+                skipped_features.append(feat)
+                continue
+            
             if feat in df_transformed.columns:
                 # Check for non-positive values
                 min_val = df_transformed[feat].min()
@@ -229,6 +241,8 @@ class DataHealthAnalyzer:
                 transformed_cols.append(new_col)
         
         self.log(f"\n✓ Total new features created: {len(transformed_cols)}")
+        if skipped_features:
+            self.log(f"⚠ Skipped {len(skipped_features)} feature(s): {skipped_features[:5]}")
         
         return df_transformed
     
@@ -243,11 +257,12 @@ class DataHealthAnalyzer:
         self.log(f"{'='*80}")
 
 
-def run_data_health_check(df: pd.DataFrame) -> pd.DataFrame:
+def run_data_health_check(df: pd.DataFrame, target_column: str = None) -> pd.DataFrame:
     """Run complete data health check pipeline.
     
     Args:
         df: Input DataFrame
+        target_column: Name of target column (to exclude from transformations)
         
     Returns:
         Transformed DataFrame with log features
@@ -266,8 +281,8 @@ def run_data_health_check(df: pd.DataFrame) -> pd.DataFrame:
     # Step 1.4: Skewness analysis
     skewed_features, _ = analyzer.analyze_skewness(threshold=2.0)
     
-    # Step 1.5: Apply transformations
-    df_transformed = analyzer.apply_transformations(skewed_features)
+    # Step 1.5: Apply transformations (exclude target)
+    df_transformed = analyzer.apply_transformations(skewed_features, target_column=target_column)
     
     # Save report
     analyzer.save_report()

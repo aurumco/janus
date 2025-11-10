@@ -283,6 +283,24 @@ def main():
     # Step 0: Load dataset
     df = load_dataset(INPUT_PATH, sample_size=SAMPLE_SIZE)
     
+    print_banner("REMOVING CONTAMINATED FEATURES (Data Leakage Prevention)")
+    
+    CONTAMINATED_FEATURES = [
+        'garch_volatility',     # The target itself - will be detected separately
+        'ATR_5_pct_M15',        # Leaks current volatility (corr: 0.87+)
+        'log_return'            # Direct ingredient for GARCH calculation
+    ]
+    
+    # Drop contaminated features (except target which we need)
+    features_to_drop = [col for col in CONTAMINATED_FEATURES if col in df.columns and col != 'garch_volatility']
+    if features_to_drop:
+        print(f"🚫 Dropping contaminated features: {features_to_drop}")
+        df = df.drop(columns=features_to_drop)
+        print(f"  ✓ Dropped {len(features_to_drop)} feature(s)")
+        print(f"  • New shape: {df.shape}")
+    else:
+        print("  ✓ No contaminated features found (or already removed)")
+    
     # Detect target and features
     print_banner("DETECTING TARGET & FEATURES")
     
@@ -290,6 +308,13 @@ def main():
     print(f"✓ Target column detected: {target_column}")
     
     feature_columns = detect_feature_columns(df, target_column)
+    
+    # Remove duplicates from feature list (if any)
+    original_len = len(feature_columns)
+    feature_columns = list(dict.fromkeys(feature_columns))  # Preserves order, removes duplicates
+    if len(feature_columns) < original_len:
+        print(f"⚠ Removed {original_len - len(feature_columns)} duplicate feature(s)")
+    
     print(f"✓ Feature columns detected: {len(feature_columns)}")
     print(f"  First 10: {feature_columns[:10]}")
     
@@ -301,11 +326,18 @@ def main():
     
     # Step 1: Data Health Check
     print_banner("STEP 1: DATA HEALTH CHECK")
-    df_clean = run_data_health_check(df)
+    df_clean = run_data_health_check(df, target_column=target_column)
     
-    # Update feature list with new log features
-    new_features = [col for col in df_clean.columns if col.startswith('log_')]
-    feature_columns.extend(new_features)
+    # Update feature list with new log features (excluding log transforms of target)
+    new_features = [col for col in df_clean.columns 
+                   if col.startswith('log_') and col != f'log_{target_column}']
+    if new_features:
+        print(f"\n📊 Adding {len(new_features)} log-transformed features to feature list")
+        feature_columns.extend(new_features)
+    
+    # Remove duplicates again after adding log features
+    feature_columns = list(dict.fromkeys(feature_columns))
+    
     results['n_skewed'] = len([col for col in df.columns if f'log_{col}' in df_clean.columns])
     results['n_log_features'] = len(new_features)
     
