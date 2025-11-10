@@ -35,7 +35,7 @@ pretrain:
     train_ratio: 0.9
     val_ratio: 0.1
     test_ratio: 0.0
-    num_workers: 4
+    num_workers: 0
     shuffle_train: false
     use_streaming_fallback: false
   
