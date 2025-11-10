@@ -15,12 +15,28 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import joblib
 
+# Optional GPU libs (RAPIDS)
+try:
+    import cuml
+    from cuml.ensemble import RandomForestRegressor as cuRF
+    import cupy as cp
+    HAS_CUML = True
+except Exception:
+    HAS_CUML = False
+
+# Optional GPU libs (XGBoost)
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
 
 class BaselineModeler:
     """Baseline model trainer and evaluator."""
     
     def __init__(self, df: pd.DataFrame, target_column: str, 
-                 feature_columns: List[str], output_dir: str = "analysis/reports"):
+                 feature_columns: List[str], output_dir: str = "analysis/reports",
+                 use_gpu: bool = True):
         """Initialize modeler.
         
         Args:
@@ -42,6 +58,9 @@ class BaselineModeler:
         self.model_dir.mkdir(parents=True, exist_ok=True)
         
         self.report = []
+        self.use_gpu = use_gpu and HAS_CUML
+        if use_gpu and not HAS_CUML:
+            self.log("\n⚠ GPU requested but RAPIDS cuML not available. Falling back to CPU sklearn.")
     
     def log(self, message: str):
         """Add message to report."""
@@ -166,32 +185,80 @@ class BaselineModeler:
         self.log("\n" + "="*80)
         self.log("STEP 5.3: RANDOM FOREST (Non-linear Baseline)")
         self.log("="*80)
-        
-        # Train with limited depth to prevent overfitting
-        rf_model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=20,
-            min_samples_leaf=10,
-            n_jobs=-1,
-            random_state=42,
-            verbose=0
-        )
-        
-        self.log("\nTraining Random Forest (100 trees, max_depth=10)...")
-        rf_model.fit(X_train, y_train)
-        
-        # Predict
-        y_train_pred = rf_model.predict(X_train)
-        y_test_pred = rf_model.predict(X_test)
+
+        # Prefer XGBoost GPU if available, then cuML RF, else sklearn RF
+        if self.use_gpu and HAS_XGB:
+            self.log("\nUsing GPU (XGBoost 'gpu_hist') for training...")
+            xgb_params = dict(
+                n_estimators=400,
+                max_depth=8,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                objective='reg:squarederror',
+                tree_method='gpu_hist',
+                predictor='gpu_predictor',
+                random_state=42,
+            )
+            rf_model = xgb.XGBRegressor(**xgb_params)
+            self.log("\nTraining XGBoost (GPU, 400 trees, max_depth=8)...")
+            rf_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+            y_train_pred = rf_model.predict(X_train)
+            y_test_pred = rf_model.predict(X_test)
+            y_train_cpu = y_train
+            y_test_cpu = y_test
+        elif self.use_gpu and HAS_CUML:
+            self.log("\nUsing GPU (cuML RandomForest) on CUDA for training...")
+            # Convert to CuPy arrays
+            Xtr = cp.asarray(X_train.values)
+            Xte = cp.asarray(X_test.values)
+            ytr = cp.asarray(y_train.values)
+            yte = cp.asarray(y_test.values)
+
+            rf_model = cuRF(
+                n_estimators=100,
+                max_depth=10,
+                max_features='auto',
+                n_streams=8,
+                random_state=42,
+            )
+            self.log("\nTraining cuML RandomForest (100 trees, max_depth=10)...")
+            rf_model.fit(Xtr, ytr)
+
+            # Predict (results on GPU), then bring back to CPU numpy
+            y_train_pred = cp.asnumpy(rf_model.predict(Xtr))
+            y_test_pred = cp.asnumpy(rf_model.predict(Xte))
+            y_train_cpu = y_train.to_numpy()
+            y_test_cpu = y_test.to_numpy()
+        else:
+            # CPU sklearn fallback
+            rf_model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=20,
+                min_samples_leaf=10,
+                n_jobs=-1,
+                random_state=42,
+                verbose=0
+            )
+            
+            self.log("\nTraining Random Forest (CPU, 100 trees, max_depth=10)...")
+            rf_model.fit(X_train, y_train)
+            
+            # Predict
+            y_train_pred = rf_model.predict(X_train)
+            y_test_pred = rf_model.predict(X_test)
+            y_train_cpu = y_train
+            y_test_cpu = y_test
         
         # Metrics
-        train_r2 = r2_score(y_train, y_train_pred)
-        test_r2 = r2_score(y_test, y_test_pred)
-        train_mae = mean_absolute_error(y_train, y_train_pred)
-        test_mae = mean_absolute_error(y_test, y_test_pred)
-        train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-        test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+        train_r2 = r2_score(y_train_cpu, y_train_pred)
+        test_r2 = r2_score(y_test_cpu, y_test_pred)
+        train_mae = mean_absolute_error(y_train_cpu, y_train_pred)
+        test_mae = mean_absolute_error(y_test_cpu, y_test_pred)
+        train_rmse = np.sqrt(mean_squared_error(y_train_cpu, y_train_pred))
+        test_rmse = np.sqrt(mean_squared_error(y_test_cpu, y_test_pred))
         
         self.log(f"\n📊 RANDOM FOREST RESULTS:")
         self.log(f"\n  Training Set:")
@@ -213,7 +280,10 @@ class BaselineModeler:
             self.log(f"    ⚠ Some overfitting present")
         
         # Save model
-        joblib.dump(rf_model, self.model_dir / "random_forest.pkl")
+        try:
+            joblib.dump(rf_model, self.model_dir / ("random_forest_gpu.pkl" if self.use_gpu else "random_forest.pkl"))
+        except Exception:
+            self.log("\n⚠ Could not save Random Forest model (possibly due to GPU object pickling). Skipping save.")
         
         return {
             'model': rf_model,
@@ -344,7 +414,7 @@ class BaselineModeler:
 
 
 def run_baseline_modeling(df: pd.DataFrame, target_column: str, 
-                         feature_columns: List[str]) -> Dict:
+                         feature_columns: List[str], use_gpu: bool = True) -> Dict:
     """Run complete baseline modeling pipeline.
     
     Args:
@@ -355,7 +425,7 @@ def run_baseline_modeling(df: pd.DataFrame, target_column: str,
     Returns:
         Dictionary with model results and feature importance
     """
-    modeler = BaselineModeler(df, target_column, feature_columns)
+    modeler = BaselineModeler(df, target_column, feature_columns, use_gpu=use_gpu)
     
     # Prepare data
     X_train, X_test, y_train, y_test = modeler.prepare_data()

@@ -339,7 +339,7 @@ def main():
     
     # Step 5: Baseline Modeling
     print_banner("STEP 5: BASELINE MODELING")
-    model_results = run_baseline_modeling(df_lagged, target_column, feature_columns)
+    model_results = run_baseline_modeling(df_lagged, target_column, feature_columns, use_gpu=True)
     
     results['lr_r2'] = model_results['lr_results']['test_r2']
     results['lr_mae'] = model_results['lr_results']['test_mae']
