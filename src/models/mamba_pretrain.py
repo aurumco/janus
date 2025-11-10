@@ -76,10 +76,8 @@ class MambaPretrainModel(nn.Module):
                 for _ in range(n_layers)
             ]
         )
-
-        self.layer_norms = nn.ModuleList(
-            [nn.LayerNorm(d_model) for _ in range(n_layers)]
-        )
+        
+        # MambaBlock now has its own LayerNorm, no need for external norms
 
         if self.enable_reconstruction_head:
             self.reconstruction_head = nn.Linear(d_model, reconstruction_head_dim)
@@ -87,12 +85,13 @@ class MambaPretrainModel(nn.Module):
             self.reconstruction_head = None
 
         if self.enable_volatility_head:
+            # Predicting log1p(volatility), so no need for Softplus activation
+            # Target is already log-transformed and can be negative
             self.volatility_head = nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(d_model // 2, volatility_head_dim),
-                nn.Softplus(),
             )
         else:
             self.volatility_head = None
@@ -127,15 +126,14 @@ class MambaPretrainModel(nn.Module):
         x = self.input_projection(x)
         x = self.input_norm(x)
 
-        for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
+        # MambaBlock now handles LayerNorm and residual internally
+        for mamba_layer in self.mamba_layers:
             if self.training and self.use_gradient_checkpointing:
-                def checkpoint_fn(x_input, layer, norm):
-                    return layer(norm(x_input))
-                x = x + torch.utils.checkpoint.checkpoint(
-                    checkpoint_fn, x, mamba_layer, layer_norm, use_reentrant=False
+                x = torch.utils.checkpoint.checkpoint(
+                    mamba_layer, x, use_reentrant=False
                 )
             else:
-                x = x + mamba_layer(layer_norm(x))
+                x = mamba_layer(x)
 
         output = {}
 

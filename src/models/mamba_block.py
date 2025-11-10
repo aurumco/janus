@@ -52,6 +52,7 @@ class MambaBlock(nn.Module):
             )
             raise ImportError(hint)
 
+        self.norm = nn.LayerNorm(d_model)
         self.mamba = Mamba(
             d_model=d_model,
             d_state=d_state,
@@ -62,7 +63,7 @@ class MambaBlock(nn.Module):
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through Mamba block.
+        """Forward pass through Mamba block with residual connection.
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model).
@@ -70,6 +71,9 @@ class MambaBlock(nn.Module):
         Returns:
             Output tensor of shape (batch, seq_len, d_model).
         """
+        residual = x
+        x = self.norm(x)
         x = self.mamba(x)
         x = self.dropout(x)
+        x = residual + x
         return x
