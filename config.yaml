@@ -26,7 +26,7 @@ pretrain:
     sequence_length: 72
     batch_size: 256
     num_features: 16
-    stride: 4
+    stride: 6
     use_gpu_preprocess: true
     masking_ratio: 0.0
     volatility_lookahead: 90
@@ -69,7 +69,7 @@ pretrain:
     save_best_only: true
   
   loss:
-    masked_price_weight: 0.0
+    masked_price_weight: 0.4
     volatility_weight: 1.0
     direction_weight: 0.0
     contrastive_weight: 0.4
