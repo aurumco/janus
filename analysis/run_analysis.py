@@ -267,7 +267,7 @@ def main():
     
     # Configuration
     # Modify this path for your environment
-    INPUT_PATH = "/kaggle/input/janusds/janus_pretrain_1min/janus_pretrain_1min_dataset.parquet"
+    INPUT_PATH = "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
     
     # For faster testing, set a sample size (or None for full dataset)
     SAMPLE_SIZE = None  # Set to 500000 for quick testing
