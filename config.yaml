@@ -41,7 +41,7 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 64
+    d_model: 128
     d_state: 16
     d_conv: 4
     n_layers: 3

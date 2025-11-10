@@ -69,64 +69,29 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         else:
             feature_cols = [c for c in self.feature_columns if c not in ('asset_id', 'timestamp')]
 
-        # Sort data for chronological processing if columns exist
-        if 'asset_id' in data.columns and 'timestamp' in data.columns:
-            data_sorted = data.sort_values(by=['asset_id', 'timestamp']).reset_index(drop=True)
+        # MEMORY-EFFICIENT: Assume data is already sorted chronologically in parquet
+        # DO NOT sort or groupby - these operations copy the entire DataFrame!
+        
+        # Extract features and asset_ids as numpy arrays directly (no copy)
+        features = data[feature_cols].values
+        if self.target_column is None or self.target_column not in data.columns:
+            targets = np.zeros(len(data), dtype=np.float32)
         else:
-            data_sorted = data.reset_index(drop=True)
-
-        # Asset-aware windowing: do not allow windows to cross asset boundaries
-        if 'asset_id' in data_sorted.columns:
-            X_list: list[np.ndarray] = []
-            y_list: list[np.ndarray] = []
-            aid_list: list[np.ndarray] = []
-
-            for aid, gdf in data_sorted.groupby('asset_id', sort=False):
-                feat = gdf[feature_cols].values
-                if self.target_column is None or self.target_column not in gdf.columns:
-                    tgt = np.zeros(len(gdf), dtype=np.float32)
-                else:
-                    tgt = gdf[self.target_column].values
-
-                if len(gdf) < self.sequence_length:
-                    continue
-
-                X_g, y_g = self._create_sequences(feat, tgt)
-                if X_g.size == 0:
-                    continue
-                X_list.append(X_g)
-                y_list.append(y_g)
-                # Align asset ids to the end of each window (sequence_length - 1 offset)
-                end_indices = np.arange(self.sequence_length - 1, self.sequence_length - 1 + X_g.shape[0])
-                aid_aligned = np.full((X_g.shape[0],), int(aid), dtype=np.int64)
-                aid_list.append(aid_aligned)
-
-            if len(X_list) == 0:
-                # Fallback to global processing (no assets or insufficient data)
-                features = data_sorted[feature_cols].values
-                if self.target_column is None or self.target_column not in data_sorted.columns:
-                    targets = np.zeros(len(data_sorted), dtype=np.float32)
-                else:
-                    targets = data_sorted[self.target_column].values
-                X, y = self._create_sequences(features, targets)
-                self._asset_ids_out = None
-                return X, y
-
-            X = np.concatenate(X_list, axis=0)
-            y = np.concatenate(y_list, axis=0).astype(np.float32, copy=False)
-            self._asset_ids_out = np.concatenate(aid_list, axis=0)
-            return X, y
+            targets = data[self.target_column].values
+        
+        # Create sequences from the full dataset (chronological order preserved)
+        X, y = self._create_sequences(features, targets)
+        
+        # If asset_id exists, extract it aligned to sequence windows
+        if 'asset_id' in data.columns:
+            # Get asset_id at the END of each sequence window (last timestep)
+            asset_ids_raw = data['asset_id'].values
+            # Align to sequence ends: window i ends at position (i + sequence_length - 1)
+            self._asset_ids_out = asset_ids_raw[self.sequence_length - 1 : self.sequence_length - 1 + X.shape[0]]
         else:
-            # No asset column: process as a single continuous series
-            features = data_sorted[feature_cols].values
-            if self.target_column is None or self.target_column not in data_sorted.columns:
-                targets = np.zeros(len(data_sorted), dtype=np.float32)
-            else:
-                targets = data_sorted[self.target_column].values
-
-            X, y = self._create_sequences(features, targets)
             self._asset_ids_out = None
-            return X, y
+        
+        return X, y
 
     def process_gpu(self, parquet_path: str) -> Tuple[str, str, int, int]:
         """GPU-accelerated chunked processing writing base features memmap.
