@@ -77,16 +77,12 @@ class MambaPretrainModel(nn.Module):
             ]
         )
         
-        # MambaBlock now has its own LayerNorm, no need for external norms
-
         if self.enable_reconstruction_head:
             self.reconstruction_head = nn.Linear(d_model, reconstruction_head_dim)
         else:
             self.reconstruction_head = None
 
         if self.enable_volatility_head:
-            # Predicting log1p(volatility), so no need for Softplus activation
-            # Target is already log-transformed and can be negative
             self.volatility_head = nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
                 nn.GELU(),
@@ -126,7 +122,6 @@ class MambaPretrainModel(nn.Module):
         x = self.input_projection(x)
         x = self.input_norm(x)
 
-        # MambaBlock now handles LayerNorm and residual internally
         for mamba_layer in self.mamba_layers:
             if self.training and self.use_gradient_checkpointing:
                 x = torch.utils.checkpoint.checkpoint(

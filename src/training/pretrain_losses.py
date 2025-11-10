@@ -63,6 +63,35 @@ class PretrainLoss(nn.Module):
         Returns:
             Dictionary with total loss and individual loss components.
         """
+        # SUPERVISED MODE: If only volatility_weight > 0, use simplified loss computation
+        is_supervised = (
+            self.masked_price_weight == 0.0 and
+            self.volatility_weight > 0.0 and
+            self.direction_weight == 0.0 and
+            self.contrastive_weight == 0.0 and
+            self.temporal_consistency_weight == 0.0
+        )
+        
+        if is_supervised:
+            # Pure supervised volatility prediction
+            predicted_volatility = model_outputs.get("predicted_volatility", None)
+            volatility_target = batch.get("volatility_target", None)
+            
+            if predicted_volatility is not None and volatility_target is not None:
+                # Use L1Loss (MAE) which is more robust to outliers
+                volatility_loss = F.l1_loss(predicted_volatility, volatility_target)
+                
+                if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
+                    volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
+            else:
+                volatility_loss = torch.tensor(0.0, device=self._infer_device(model_outputs, batch))
+            
+            return {
+                "volatility_loss": volatility_loss,
+                "total_loss": volatility_loss,  # No weighting needed since it's the only loss
+            }
+        
+        # MULTI-TASK SSL MODE: Original complex loss computation
         reconstructed_sequence = model_outputs.get("reconstructed_sequence", None)
         predicted_volatility = model_outputs.get("predicted_volatility", None)
         predicted_direction = model_outputs.get("predicted_direction", None)

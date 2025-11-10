@@ -52,22 +52,19 @@ class PretrainDataset(Dataset):
         return max(0, self.n_samples - self.volatility_lookahead)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single pre-training sample with masking.
+        """Get a single sample for supervised volatility prediction.
 
         Args:
             idx: Sample index.
 
         Returns:
-            Dictionary containing masked input, targets, and metadata.
+            Dictionary containing input sequence, volatility target, and asset_id.
         """
         original_sequence = self.X[idx].clone()
         asset_id = self.asset_ids[idx]
         
-        num_to_mask = max(1, int(self.seq_len * self.masking_ratio))
-        mask_binary = self._generate_smart_mask(original_sequence)
-        
-        masked_sequence = original_sequence.clone()
-        masked_sequence[mask_binary] = 0.0
+        # NO MASKING - use original sequence for supervised learning
+        # masking_ratio should be 0.0 in config for supervised mode
         
         future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
         if future_end_idx > idx + 5:
@@ -89,11 +86,12 @@ class PretrainDataset(Dataset):
         volatility = volatility * 100.0
 
         return {
-            "input_sequence": masked_sequence,
-            "mask_binary": mask_binary,
-            "original_sequence": original_sequence,
+            "input_sequence": original_sequence,
             "volatility_target": volatility.unsqueeze(0),
             "asset_id": asset_id,
+            # Return dummy tensors for compatibility with loss function
+            "mask_binary": torch.zeros(self.seq_len, dtype=torch.bool),
+            "original_sequence": original_sequence,
         }
     
     def _generate_smart_mask(self, sequence: torch.Tensor) -> torch.Tensor:
