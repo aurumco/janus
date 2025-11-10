@@ -32,9 +32,9 @@ pretrain:
     volatility_lookahead: 90
     smart_masking_prob: 0.0
     cross_asset_masking_prob: 0.0
-    train_ratio: 0.75
-    val_ratio: 0.15
-    test_ratio: 0.1
+    train_ratio: 0.9
+    val_ratio: 0.1
+    test_ratio: 0.0
     num_workers: 4
     shuffle_train: true
     use_streaming_fallback: false
@@ -45,7 +45,7 @@ pretrain:
     d_state: 16
     d_conv: 4
     n_layers: 3
-    dropout: 0.25
+    dropout: 0.35
     num_assets: 15
     asset_embedding_dim: 32
     reconstruction_head_dim: 16
@@ -58,7 +58,7 @@ pretrain:
   training:
     epochs: 1
     learning_rate: 0.0001
-    weight_decay: 0.005
+    weight_decay: 0.01
     optimizer: "adamw"
     scheduler: "cosine"
     warmup_epochs: 0
