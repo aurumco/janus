@@ -93,6 +93,23 @@ class BaselineModeler:
         X = X[valid_idx]
         y = y[valid_idx]
         
+        # Ensure unique feature names
+        orig_cols = list(X.columns)
+        seen = {}
+        new_cols = []
+        dup_count = 0
+        for col in orig_cols:
+            if col not in seen:
+                seen[col] = 0
+                new_cols.append(col)
+            else:
+                seen[col] += 1
+                dup_count += 1
+                new_cols.append(f"{col}__dup{seen[col]}")
+        if dup_count > 0:
+            self.log(f"\n⚠ Detected and renamed {dup_count} duplicate feature names to ensure uniqueness.")
+            X.columns = new_cols
+
         self.log(f"\nDataset prepared:")
         self.log(f"  • Total samples: {len(X):,}")
         self.log(f"  • Features: {len(valid_features)}")
@@ -188,7 +205,7 @@ class BaselineModeler:
 
         # Prefer XGBoost GPU if available, then cuML RF, else sklearn RF
         if self.use_gpu and HAS_XGB:
-            self.log("\nUsing GPU (XGBoost 'gpu_hist') for training...")
+            self.log("\n🚀 Using GPU (XGBoost 'gpu_hist') for training...")
             xgb_params = dict(
                 n_estimators=400,
                 max_depth=8,
@@ -202,10 +219,14 @@ class BaselineModeler:
             )
             rf_model = xgb.XGBRegressor(**xgb_params)
             self.log("\nTraining XGBoost (GPU, 400 trees, max_depth=8)...")
-            rf_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+            # Use numpy arrays to avoid feature name uniqueness errors
+            if X_train.columns.duplicated().any():
+                dup_count = int(X_train.columns.duplicated().sum())
+                self.log(f"\n⚠ Detected {dup_count} duplicate feature names; training XGBoost with numpy arrays to bypass name constraint.")
+            rf_model.fit(X_train.to_numpy(), y_train.to_numpy(), eval_set=[(X_test.to_numpy(), y_test.to_numpy())], verbose=False)
 
-            y_train_pred = rf_model.predict(X_train)
-            y_test_pred = rf_model.predict(X_test)
+            y_train_pred = rf_model.predict(X_train.to_numpy())
+            y_test_pred = rf_model.predict(X_test.to_numpy())
             y_train_cpu = y_train
             y_test_cpu = y_test
         elif self.use_gpu and HAS_CUML:
