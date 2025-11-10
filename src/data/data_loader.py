@@ -173,19 +173,18 @@ class DataLoaderFactory:
                 y_train = y_val = y_test = None
 
             if X is not None:
-                asset_ids = None
-                if self.mode == "pretrain" and data is not None and "asset_id" in data.columns:
+                asset_ids_train = asset_ids_val = asset_ids_test = None
+                if self.mode == "pretrain":
                     import numpy as np
-                    asset_ids = data["asset_id"].values.astype(np.int64)
-                    asset_ids = asset_ids[self.sequence_length - 1: self.sequence_length - 1 + n_samples]
-                    asset_ids_train = asset_ids[:train_end]
-                    asset_ids_val = asset_ids[train_end:val_end]
-                    asset_ids_test = asset_ids[val_end:]
-                else:
-                    import numpy as np
-                    asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
-                    asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
-                    asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
+                    asset_ids_seq = getattr(self.processing_strategy, "_asset_ids_out", None)
+                    if asset_ids_seq is not None and len(asset_ids_seq) == n_samples:
+                        asset_ids_train = asset_ids_seq[:train_end]
+                        asset_ids_val = asset_ids_seq[train_end:val_end]
+                        asset_ids_test = asset_ids_seq[val_end:]
+                    else:
+                        asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
+                        asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
+                        asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
             else:
                 asset_ids_train = asset_ids_val = asset_ids_test = None
 
@@ -266,33 +265,52 @@ class DataLoaderFactory:
                         deterministic=True,
                     )
                 else:
-                    train_dataset = PretrainDataset(
-                        X_train,
-                        asset_ids=asset_ids_train,
+                    # In-memory arrays path: build a single full dataset, then perform per-asset chronological split
+                    from torch.utils.data import Subset
+                    full_dataset = PretrainDataset(
+                        X,
+                        asset_ids=(asset_ids_seq if asset_ids_train is not None else None),
                         sequence_length=self.sequence_length,
                         masking_ratio=self.masking_ratio,
                         volatility_lookahead=self.volatility_lookahead,
                         smart_masking_prob=self.smart_masking_prob,
                         cross_asset_masking_prob=self.cross_asset_masking_prob,
                     )
-                    val_dataset = PretrainDataset(
-                        X_val,
-                        asset_ids=asset_ids_val,
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                    )
-                    test_dataset = PretrainDataset(
-                        X_test,
-                        asset_ids=asset_ids_test,
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                    )
+
+                    if asset_ids_seq is not None and len(asset_ids_seq) == n_samples:
+                        # Strict chronological per-asset split to avoid leakage and asset bias
+                        import numpy as np
+                        train_idx_list: list[int] = []
+                        val_idx_list: list[int] = []
+                        test_idx_list: list[int] = []
+
+                        unique_aids = np.unique(asset_ids_seq)
+                        for aid in unique_aids:
+                            aid_mask = (asset_ids_seq == aid)
+                            aid_indices = np.nonzero(aid_mask)[0]
+                            if aid_indices.size == 0:
+                                continue
+                            # Chronological within the asset (already aligned by processing strategy)
+                            count = aid_indices.size
+                            a_train_end = int(count * self.train_ratio)
+                            a_val_end = a_train_end + int(count * self.val_ratio)
+                            train_idx_list.extend(aid_indices[:a_train_end].tolist())
+                            val_idx_list.extend(aid_indices[a_train_end:a_val_end].tolist())
+                            test_idx_list.extend(aid_indices[a_val_end:].tolist())
+
+                        # Keep indices sorted for stable iteration
+                        train_indices = sorted(train_idx_list)
+                        val_indices = sorted(val_idx_list)
+                        test_indices = sorted(test_idx_list)
+                    else:
+                        # Fallback to simple contiguous split if asset ids are unavailable
+                        train_indices = list(range(0, train_end))
+                        val_indices = list(range(train_end, val_end))
+                        test_indices = list(range(val_end, n_samples))
+
+                    train_dataset = Subset(full_dataset, train_indices)
+                    val_dataset = Subset(full_dataset, val_indices)
+                    test_dataset = Subset(full_dataset, test_indices)
             else:
                 if self.use_streaming_fallback:
                     print("  Using streaming fallback mode (direct parquet read)")

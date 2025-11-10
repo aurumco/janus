@@ -36,7 +36,7 @@ pretrain:
     val_ratio: 0.1
     test_ratio: 0.0
     num_workers: 4
-    shuffle_train: true
+    shuffle_train: false
     use_streaming_fallback: false
   
   model:
