@@ -41,10 +41,10 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 256
+    d_model: 64
     d_state: 16
     d_conv: 4
-    n_layers: 6
+    n_layers: 3
     dropout: 0.25
     num_assets: 15
     asset_embedding_dim: 32
@@ -56,12 +56,12 @@ pretrain:
     use_gradient_checkpointing: false
   
   training:
-    epochs: 2
+    epochs: 1
     learning_rate: 0.0001
-    weight_decay: 0.001
+    weight_decay: 0.005
     optimizer: "adamw"
     scheduler: "cosine"
-    warmup_epochs: 1
+    warmup_epochs: 0
     gradient_clip: 1.0
     accumulation_steps: 1
     early_stopping_patience: 5
