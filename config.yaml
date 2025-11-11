@@ -43,7 +43,7 @@ pretrain:
     name: "MambaFoundation"
     d_model: 192
     d_state: 18
-    d_conv: 6
+    d_conv: 4
     n_layers: 6
     dropout: 0.30
     num_assets: 15
