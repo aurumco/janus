@@ -21,67 +21,67 @@ assets:
 
 # Pre-training configuration for SSL on 5min multi-asset data
 pretrain:
-  data:
-    path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
-    sequence_length: 72
-    batch_size: 256
-    num_features: 16
-    stride: 4
-    use_gpu_preprocess: true
-    masking_ratio: 0.15
-    volatility_lookahead: 90
-    smart_masking_prob: 0.3
-    cross_asset_masking_prob: 0.2
-    train_ratio: 0.95
-    val_ratio: 0.05
-    test_ratio: 0.0
-    num_workers: 4
-    shuffle_train: false
-    use_streaming_fallback: false
-  
-  model:
-    name: "MambaFoundation"
-    d_model: 192
-    d_state: 18
-    d_conv: 4
-    n_layers: 6
-    dropout: 0.30
-    num_assets: 15
-    asset_embedding_dim: 32
-    reconstruction_head_dim: 16
-    volatility_head_dim: 1
-    enable_reconstruction_head: true
-    enable_volatility_head: true
-    enable_direction_head: true
-    use_gradient_checkpointing: false
-  
-  training:
-    epochs: 50
-    learning_rate: 0.0001
-    weight_decay: 0.01
-    optimizer: "adamw"
-    scheduler: "cosine"
-    warmup_epochs: 3
-    gradient_clip: 1.0
-    accumulation_steps: 1
-    early_stopping_patience: 5
-    early_stopping_min_delta: 0.0005
-    save_best_only: true
-  
-  loss:
-    masked_price_weight: 0.6
-    volatility_weight: 1.0
-    direction_weight: 0.25
-    contrastive_weight: 0.1
-    temporal_consistency_weight: 0.1
-    temperature: 0.07
+  data:
+    path: "/kaggle/input/janusds/janus_pretrain_5min/janus_pretrain_5min_dataset.parquet"
+    sequence_length: 72
+    batch_size: 256
+    num_features: 16
+    stride: 4
+    use_gpu_preprocess: true
+    masking_ratio: 0.15
+    volatility_lookahead: 90
+    smart_masking_prob: 0.3
+    cross_asset_masking_prob: 0.2
+    train_ratio: 0.95
+    val_ratio: 0.05
+    test_ratio: 0.0
+    num_workers: 4
+    shuffle_train: false
+    use_streaming_fallback: false
+
+  model:
+    name: "MambaFoundation"
+    d_model: 144
+    d_state: 18
+    d_conv: 4
+    n_layers: 6
+    dropout: 0.30
+    num_assets: 15
+    asset_embedding_dim: 32
+    reconstruction_head_dim: 16
+    volatility_head_dim: 1
+    enable_reconstruction_head: true
+    enable_volatility_head: true
+    enable_direction_head: true
+    use_gradient_checkpointing: false
+
+  training:
+    epochs: 1
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    optimizer: "adamw"
+    scheduler: "cosine"
+    warmup_epochs: 0
+    gradient_clip: 1.0
+    accumulation_steps: 1
+    early_stopping_patience: 5
+    early_stopping_min_delta: 0.0005
+    save_best_only: true
+
+  loss:
+    masked_price_weight: 0.6
+    volatility_weight: 1.0
+    direction_weight: 0.25
+    contrastive_weight: 0.1
+    temporal_consistency_weight: 0.1
+    temperature: 0.07
 
 # Fine-tuning configuration for regression on 30min data
 finetune:
   data:
     path: "/kaggle/input/janusds/janusdataset/janus_finetune_30min_dataset.parquet"
     sequence_length: 96
-    batch_size: 128
+    batch_size: 256
     num_features: 16
     feature_columns:
       - "RSI_14_M15"
@@ -101,19 +101,19 @@ finetune:
       - "garch_volatility"
       - "asset_id"
     target_column: "target"
-    train_ratio: 0.75
-    val_ratio: 0.15
-    test_ratio: 0.10
+    train_ratio: 0.95
+    val_ratio: 0.05
+    test_ratio: 0.0
     num_workers: 0
     shuffle_train: false
   
   model:
     name: "MambaFineTuned"
-    d_model: 320
-    d_state: 16
+    d_model: 144
+    d_state: 18
     d_conv: 4
-    n_layers: 8
-    dropout: 0.15
+    n_layers: 6
+    dropout: 0.30
     num_assets: 15
     asset_embedding_dim: 32
     output_dim: 1
