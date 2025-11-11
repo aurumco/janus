@@ -41,11 +41,11 @@ pretrain:
   
   model:
     name: "MambaFoundation"
-    d_model: 512
+    d_model: 192
     d_state: 18
     d_conv: 4
-    n_layers: 12
-    dropout: 0.30
+    n_layers: 6
+    dropout: 0.2
     num_assets: 15
     asset_embedding_dim: 32
     reconstruction_head_dim: 16
@@ -69,9 +69,9 @@ pretrain:
     save_best_only: true
   
   loss:
-    masked_price_weight: 0.7
+    masked_price_weight: 0.75
     volatility_weight: 1.0
-    direction_weight: 0.2
+    direction_weight: 0.25
     contrastive_weight: 0.15
     temporal_consistency_weight: 0.1
     temperature: 0.07
