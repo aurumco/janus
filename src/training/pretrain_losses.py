@@ -142,9 +142,15 @@ class PretrainLoss(nn.Module):
                 else:
                     volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
             else:
-                volatility_loss = self.volatility_loss_fn(
-                    predicted_volatility, volatility_target
-                )
+                pred_vol = predicted_volatility.view(-1)
+                true_vol = volatility_target.view(-1)
+                volatility_loss = self.volatility_loss_fn(pred_vol, true_vol)
+                
+                pred_std = torch.std(pred_vol)
+                target_std = torch.std(true_vol)
+                variance_penalty = F.mse_loss(pred_std, target_std) * 0.1
+                volatility_loss = volatility_loss + variance_penalty
+                
             if torch.isnan(volatility_loss) or torch.isinf(volatility_loss):
                 volatility_loss = torch.tensor(0.0, device=predicted_volatility.device)
         else:

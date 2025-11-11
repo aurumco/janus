@@ -60,7 +60,6 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             missing = set((self.feature_columns or []) + ([self.target_column] if self.target_column else [])) - set(data.columns)
             raise ValueError(f"Missing required columns: {missing}")
 
-        # Determine feature columns excluding identifiers/target
         if self.feature_columns is None:
             cols = [c for c in data.columns if c not in ('asset_id', 'timestamp')]
             if self.target_column is not None:
@@ -69,24 +68,16 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         else:
             feature_cols = [c for c in self.feature_columns if c not in ('asset_id', 'timestamp')]
 
-        # MEMORY-EFFICIENT: Assume data is already sorted chronologically in parquet
-        # DO NOT sort or groupby - these operations copy the entire DataFrame!
-        
-        # Extract features and asset_ids as numpy arrays directly (no copy)
         features = data[feature_cols].values
         if self.target_column is None or self.target_column not in data.columns:
             targets = np.zeros(len(data), dtype=np.float32)
         else:
             targets = data[self.target_column].values
         
-        # Create sequences from the full dataset (chronological order preserved)
         X, y = self._create_sequences(features, targets)
         
-        # If asset_id exists, extract it aligned to sequence windows
         if 'asset_id' in data.columns:
-            # Get asset_id at the END of each sequence window (last timestep)
             asset_ids_raw = data['asset_id'].values
-            # Align to sequence ends: window i ends at position (i + sequence_length - 1)
             self._asset_ids_out = asset_ids_raw[self.sequence_length - 1 : self.sequence_length - 1 + X.shape[0]]
         else:
             self._asset_ids_out = None

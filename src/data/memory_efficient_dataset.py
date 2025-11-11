@@ -63,11 +63,7 @@ class ParquetStreamingDataset(Dataset):
         Returns:
             DataFrame with requested rows.
         """
-        # CRITICAL FIX: Read only the required rows, not the entire file!
-        # Use pandas read_parquet with row filtering
         try:
-            # Read entire file once and slice (still memory-heavy but simpler)
-            # Better approach: use pyarrow filters or row_group selection
             df = pd.read_parquet(
                 self.parquet_path,
                 engine='pyarrow',
@@ -78,7 +74,6 @@ class ParquetStreamingDataset(Dataset):
             return result
         except Exception as e:
             print(f"Warning: Error reading rows {start_row}-{end_row}: {e}")
-            # Fallback: try again
             df = pd.read_parquet(self.parquet_path)
             result = df.iloc[start_row:end_row].copy()
             del df

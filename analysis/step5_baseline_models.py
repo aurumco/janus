@@ -115,9 +115,8 @@ class BaselineModeler:
         self.log(f"  • Features: {len(valid_features)}")
         self.log(f"  • Test size: {test_size*100}%")
         
-        # Split
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
+            X, y, test_size=test_size, random_state=random_state, shuffle=False
         )
         
         self.log(f"\nSplit sizes:")

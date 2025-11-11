@@ -52,19 +52,24 @@ class PretrainDataset(Dataset):
         return max(0, self.n_samples - self.volatility_lookahead)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single sample for supervised volatility prediction.
+        """Get a single sample with optional masking for SSL pre-training.
 
         Args:
             idx: Sample index.
 
         Returns:
-            Dictionary containing input sequence, volatility target, and asset_id.
+            Dictionary containing masked sequence, mask, targets, and asset_id.
         """
         original_sequence = self.X[idx].clone()
         asset_id = self.asset_ids[idx]
         
-        # NO MASKING - use original sequence for supervised learning
-        # masking_ratio should be 0.0 in config for supervised mode
+        if self.masking_ratio > 0.0:
+            mask_binary = self._generate_smart_mask(original_sequence)
+            masked_sequence = original_sequence.clone()
+            masked_sequence[mask_binary] = 0.0
+        else:
+            mask_binary = torch.zeros(self.seq_len, dtype=torch.bool)
+            masked_sequence = original_sequence
         
         future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
         if future_end_idx > idx + 5:
@@ -86,12 +91,11 @@ class PretrainDataset(Dataset):
         volatility = volatility * 100.0
 
         return {
-            "input_sequence": original_sequence,
+            "input_sequence": masked_sequence,
+            "mask_binary": mask_binary,
+            "original_sequence": original_sequence,
             "volatility_target": volatility.unsqueeze(0),
             "asset_id": asset_id,
-            # Return dummy tensors for compatibility with loss function
-            "mask_binary": torch.zeros(self.seq_len, dtype=torch.bool),
-            "original_sequence": original_sequence,
         }
     
     def _generate_smart_mask(self, sequence: torch.Tensor) -> torch.Tensor:

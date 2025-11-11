@@ -144,7 +144,6 @@ class DataLoaderFactory:
                 X = None
                 y = None
             else:
-                # Memory-efficient CPU path: split DataFrame first, then process each split separately
                 features_path = None
                 asset_ids_path = None
                 n_timesteps = None
@@ -300,7 +299,6 @@ class DataLoaderFactory:
                         deterministic=True,
                     )
                 else:
-                    # Build separate, smaller datasets per split to minimize worker memory
                     train_dataset = PretrainDataset(
                         X_train,
                         asset_ids=asset_ids_train,

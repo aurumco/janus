@@ -309,9 +309,8 @@ def main():
     
     feature_columns = detect_feature_columns(df, target_column)
     
-    # Remove duplicates from feature list (if any)
     original_len = len(feature_columns)
-    feature_columns = list(dict.fromkeys(feature_columns))  # Preserves order, removes duplicates
+    feature_columns = list(dict.fromkeys(feature_columns))
     if len(feature_columns) < original_len:
         print(f"⚠ Removed {original_len - len(feature_columns)} duplicate feature(s)")
     

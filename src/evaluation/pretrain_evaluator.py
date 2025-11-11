@@ -57,7 +57,8 @@ class EnhancedPretrainEvaluator:
         logger.info(f"Evaluating on {min(len(dataloader), max_batches)} batches", indent=1)
         
         with torch.no_grad():
-            for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=min(len(dataloader), max_batches))):
+            pbar = tqdm(dataloader, desc="Evaluating", total=min(len(dataloader), max_batches), leave=False)
+            for batch_idx, batch in enumerate(pbar):
                 if batch_idx >= max_batches:
                     break
                 input_seq = batch["input_sequence"].to(self.device)
@@ -145,16 +146,18 @@ class EnhancedPretrainEvaluator:
         all_pred_vols_cat = torch.cat(all_pred_vols, dim=0)
         all_true_vols_cat = torch.cat(all_true_vols, dim=0)
 
-        # Diagnostic logging for volatility
         if len(all_true_vols_cat) > 0:
             vol_target_np = all_true_vols_cat.squeeze().numpy()
             vol_pred_np = all_pred_vols_cat.squeeze().numpy()
-            logger.info("\nVolatility:", indent=1)
+            logger.info("\nVolatility Statistics:", indent=1)
             logger.metric("Target Mean", f"{np.mean(vol_target_np):.6f}", indent=2)
             logger.metric("Target Std", f"{np.std(vol_target_np):.6f}", indent=2)
             logger.metric("Target Min/Max", f"{np.min(vol_target_np):.6f} / {np.max(vol_target_np):.6f}", indent=2)
             logger.metric("Pred Mean", f"{np.mean(vol_pred_np):.6f}", indent=2)
             logger.metric("Pred Std", f"{np.std(vol_pred_np):.6f}", indent=2)
+            logger.metric("Pred Min/Max", f"{np.min(vol_pred_np):.6f} / {np.max(vol_pred_np):.6f}", indent=2)
+            mae = np.mean(np.abs(vol_pred_np - vol_target_np))
+            logger.metric("MAE", f"{mae:.6f}", indent=2)
             logger.metric("Zeros in targets", f"{np.sum(vol_target_np == 0.0)} / {len(vol_target_np)} ({100*np.sum(vol_target_np == 0.0)/len(vol_target_np):.1f}%)", indent=2)
             logger.blank_line()
 
