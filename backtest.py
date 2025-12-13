@@ -20,13 +20,13 @@ except ImportError:
     ONNX_AVAILABLE = False
     ort = None
 
-from backtest.config import BacktestConfig
-from backtest.engine import BacktestEngine
-from backtest.reporter import BacktestReporter
+from src.backtest_utils.config import BacktestConfig
+from src.backtest_utils.engine import BacktestEngine
+from src.backtest_utils.reporter import BacktestReporter
 from src.config.config_loader import ConfigLoader
 
 
-from backtest.model_loader import load_model_auto, ModelInferenceWrapper
+from src.backtest_utils.model_loader import load_model_auto, ModelInferenceWrapper
 
 
 def load_model(checkpoint_path: str, config: ConfigLoader) -> ModelInferenceWrapper:
@@ -63,28 +63,47 @@ def generate_predictions(
         signals: -1 (short), 0 (neutral), 1 (long)
         predicted_changes: continuous predicted price changes
     """
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    # Extract features as numpy array
+    features = data[feature_columns].values.astype(np.float32)
+
+    # Create sliding windows view - zero copy
+    # shape: (n_samples, sequence_length, n_features)
+    # sliding_window_view on axis 0 of shape (N, F) with window W gives (N-W+1, F, W)
+    windows = sliding_window_view(features, window_shape=sequence_length, axis=0)
+
+    # We want (n_windows, sequence_length, n_features), so we swap the last two axes
+    windows = np.moveaxis(windows, 2, 1)
+
+    # Predict in batches
+    batch_size = 1024
     predicted_changes = []
-    signals = []
 
-    for i in range(sequence_length - 1, len(data)):
-        sequence = data[feature_columns].iloc[i - sequence_length + 1:i + 1].values
+    for i in range(0, len(windows), batch_size):
+        batch = windows[i:i + batch_size]
+        # Ensure batch is physically contiguous for efficient inference if needed
+        # batch = np.ascontiguousarray(batch)
+        # model.predict_batch should handle it, but contiguous is safer.
+        batch_preds = model.predict_batch(batch)
+        predicted_changes.append(batch_preds)
         
-        pred_change = model.predict(sequence)
-        
-        if abs(pred_change) < entry_threshold:
-            signal = 0
-        elif pred_change > entry_threshold:
-            signal = 1
-        else:
-            signal = -1
-        
-        predicted_changes.append(pred_change)
-        signals.append(signal)
+    if predicted_changes:
+        predicted_changes = np.concatenate(predicted_changes)
+    else:
+        predicted_changes = np.array([])
 
-    padding_signal = [0] * (sequence_length - 1)
-    padding_change = [0.0] * (sequence_length - 1)
+    # Vectorized signal generation
+    signals = np.zeros_like(predicted_changes, dtype=int)
+    signals[predicted_changes > entry_threshold] = 1
+    signals[predicted_changes < -entry_threshold] = -1
+
+    # Add padding
+    padding_len = sequence_length - 1
+    padding_signal = np.zeros(padding_len, dtype=int)
+    padding_change = np.zeros(padding_len, dtype=float)
     
-    return np.array(padding_signal + signals), np.array(padding_change + predicted_changes)
+    return np.concatenate([padding_signal, signals]), np.concatenate([padding_change, predicted_changes])
 
 
 def main() -> None:
@@ -97,7 +116,7 @@ def main() -> None:
     parser.add_argument('--end-date', type=str, default='2025-09-30', help='Backtest end date')
     parser.add_argument('--initial-capital', type=float, default=6000000, help='Initial capital')
     parser.add_argument('--leverage', type=int, default=5, help='Leverage')
-    parser.add_argument('--entry-threshold', type=float, default=0.005, help='Minimum predicted change to enter (0.5%)')
+    parser.add_argument('--entry-threshold', type=float, default=0.005, help='Minimum predicted change to enter (0.5%%)')
 
     args = parser.parse_args()
 
