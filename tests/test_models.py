@@ -1,7 +1,22 @@
 """Unit tests for model architectures."""
 
+import sys
+from unittest.mock import MagicMock
 import torch
+import torch.nn as nn
 import pytest
+
+# Mock mamba_ssm
+mamba_ssm_mock = MagicMock()
+class MockMamba(nn.Module):
+    def __init__(self, d_model, d_state, d_conv, expand):
+        super().__init__()
+        self.linear = nn.Linear(d_model, d_model)
+    def forward(self, x):
+        return self.linear(x)
+
+mamba_ssm_mock.Mamba = MockMamba
+sys.modules["mamba_ssm"] = mamba_ssm_mock
 
 from src.models.mamba_pretrain import MambaPretrainModel
 from src.models.mamba_regressor import MambaRegressor
