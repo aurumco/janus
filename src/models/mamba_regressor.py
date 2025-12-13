@@ -49,12 +49,12 @@ class MambaRegressor(nn.Module):
 
         if asset_embedding_dim > 0:
             self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
-            total_input_dim = input_dim + asset_embedding_dim
+            self.asset_projection = nn.Linear(asset_embedding_dim, d_model, bias=False)
         else:
             self.asset_embedding = None
-            total_input_dim = input_dim
+            self.asset_projection = None
 
-        self.input_projection = nn.Linear(total_input_dim, d_model)
+        self.input_projection = nn.Linear(input_dim, d_model)
         self.input_norm = nn.LayerNorm(d_model)
 
         self.mamba_layers = nn.ModuleList([
@@ -65,10 +65,6 @@ class MambaRegressor(nn.Module):
                 dropout=dropout,
             )
             for _ in range(n_layers)
-        ])
-
-        self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(d_model) for _ in range(n_layers)
         ])
 
         # Regression head: outputs continuous value
@@ -92,18 +88,24 @@ class MambaRegressor(nn.Module):
         Returns:
             Predictions tensor of shape (batch, output_dim).
         """
-        batch_size, seq_len, _ = x.shape
+        # Project inputs: (batch, seq_len, input_dim) -> (batch, seq_len, d_model)
+        x_proj = self.input_projection(x)
 
+        # Add asset embedding projection if available
         if self.asset_embedding is not None and asset_ids is not None:
+            # (batch, asset_dim)
             asset_emb = self.asset_embedding(asset_ids)
-            asset_emb = asset_emb.unsqueeze(1).expand(-1, seq_len, -1)
-            x = torch.cat([x, asset_emb], dim=-1)
+            # (batch, d_model)
+            asset_proj = self.asset_projection(asset_emb)
+            # Broadcast add: (batch, seq_len, d_model) + (batch, 1, d_model)
+            x = x_proj + asset_proj.unsqueeze(1)
+        else:
+            x = x_proj
 
-        x = self.input_projection(x)
         x = self.input_norm(x)
 
-        for mamba_layer, layer_norm in zip(self.mamba_layers, self.layer_norms):
-            x = x + mamba_layer(layer_norm(x))
+        for mamba_layer in self.mamba_layers:
+            x = mamba_layer(x)
 
         # Use last sequence position for prediction
         x = x[:, -1, :]
