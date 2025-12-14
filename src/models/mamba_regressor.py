@@ -24,6 +24,7 @@ class MambaRegressor(nn.Module):
         num_assets: int = 15,
         asset_embedding_dim: int = 32,
         pretrained_checkpoint_path: Optional[str] = None,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         """Initialize Mamba regressor.
 
@@ -38,6 +39,7 @@ class MambaRegressor(nn.Module):
             num_assets: Number of unique assets.
             asset_embedding_dim: Asset embedding dimension.
             pretrained_checkpoint_path: Path to pretrained model checkpoint.
+            use_gradient_checkpointing: Whether to use gradient checkpointing.
         """
         super().__init__()
 
@@ -46,6 +48,7 @@ class MambaRegressor(nn.Module):
         self.output_dim = output_dim
         self.num_assets = num_assets
         self.asset_embedding_dim = asset_embedding_dim
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         if asset_embedding_dim > 0:
             self.asset_embedding = nn.Embedding(num_assets, asset_embedding_dim)
@@ -105,7 +108,12 @@ class MambaRegressor(nn.Module):
         x = self.input_norm(x)
 
         for mamba_layer in self.mamba_layers:
-            x = mamba_layer(x)
+            if self.training and self.use_gradient_checkpointing:
+                x = torch.utils.checkpoint.checkpoint(
+                    mamba_layer, x, use_reentrant=False
+                )
+            else:
+                x = mamba_layer(x)
 
         # Use last sequence position for prediction
         x = x[:, -1, :]
