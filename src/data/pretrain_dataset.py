@@ -118,12 +118,24 @@ class PretrainDataset(Dataset):
         if use_cross_asset:
             mask_binary = self._cross_asset_mask(sequence, mask_binary)
         
-        if not (use_smart_masking or use_cross_asset):
-            num_mask = max(1, int(self.sequence_length * self.masking_ratio))
-            mask_positions = np.random.choice(
-                self.sequence_length, size=num_mask, replace=False
-            )
-            mask_binary[mask_positions] = True
+        # Ensure we meet the minimum masking ratio
+        current_masked_count = mask_binary.sum().item()
+        target_masked_count = int(self.sequence_length * self.masking_ratio)
+
+        if current_masked_count < target_masked_count:
+            # Add random masking to meet the quota
+            needed = target_masked_count - current_masked_count
+            # Get indices that are not yet masked
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+
+            if len(unmasked_indices) > 0:
+                # Limit needed to available unmasked spots
+                needed = min(needed, len(unmasked_indices))
+
+                new_mask_indices = np.random.choice(
+                    unmasked_indices, size=needed, replace=False
+                )
+                mask_binary[new_mask_indices] = True
         
         return mask_binary
     

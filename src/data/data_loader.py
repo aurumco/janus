@@ -1,12 +1,13 @@
 """Data loading and preparation utilities."""
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple, Any
 import gc
 import time
+import numpy as np
 
 import pandas as pd
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset, Dataset
 
 try:
     from src.utils.logger import logger
@@ -107,272 +108,406 @@ class DataLoaderFactory:
         Returns:
             Dictionary with 'train', 'val', and 'test' DataLoaders.
         """
-        start_time = time.time()
-        def mem_info(prefix: str) -> None:
-            if psutil and self.verbose:
-                mi = psutil.Process().memory_info()
-                if logger:
-                    logger.info(f"{prefix}: RSS={mi.rss/1e9:.2f}GB", indent=2)
+        self._log_memory("Start create_data_loaders")
 
         try:
-            if self.verbose and logger:
-                logger.info("Reading parquet file", indent=1)
-            data = None
-            gdata = None
-            if self.use_gpu_preprocess:
-                try:
-                    import cudf  # type: ignore
-                    gdata = str(self.data_path)
-                    if self.verbose and logger:
-                        logger.info("Using cuDF GPU processing", indent=2)
-                except Exception as ge:
-                    if self.verbose and logger:
-                        logger.warning(f"GPU read failed, using CPU: {type(ge).__name__}", indent=2)
-                    gdata = None
-            if gdata is None:
-                data = pd.read_parquet(self.data_path, engine="pyarrow")
-                if self.verbose and logger:
-                    logger.info(f"Loaded {data.shape[0]} rows", indent=2)
+            # 1. Load Data
+            data, gdata = self._load_data()
 
-            if self.verbose and logger:
-                logger.info("Processing sequences", indent=1)
-            if gdata is not None and self.use_gpu_preprocess:
-                features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
-                if self.verbose and logger:
-                    logger.info(f"Features: {n_timesteps} × {n_features}", indent=2)
-                    mem_info("After GPU process")
-                X = None
-                y = None
-            else:
-                features_path = None
-                asset_ids_path = None
-                n_timesteps = None
-                n_features = None
-                X = None
-                y = None
+            # 2. Process Data (GPU or CPU)
+            # We split the process to ensure data is deleted before tensor allocation
+            processed_data = self._process_data(data, gdata)
 
-            if self.verbose and logger:
-                logger.info("Splitting train/val/test (chronological)", indent=1)
-            cpu_row_split = (gdata is None)
-            if cpu_row_split:
-                # Row-wise chronological split before heavy processing to limit memory
-                n_rows = len(data) if data is not None else 0
-                train_row_end = int(n_rows * self.train_ratio)
-                val_row_end = int(n_rows * (self.train_ratio + self.val_ratio))
-                train_df = data.iloc[:train_row_end].copy() if n_rows > 0 else None
-                val_df = data.iloc[train_row_end:val_row_end].copy() if n_rows > 0 else None
-                test_df = data.iloc[val_row_end:].copy() if n_rows > 0 else None
-                # Free full DataFrame ASAP
+            # CPU PATH: We have temporary splits, need to delete data, then process
+            if "_temp_splits" in processed_data:
+                # 2b. Explicitly delete raw data before heavy processing
                 del data
+                data = None
                 gc.collect()
-                # Process each split separately to obtain sequences and aligned asset IDs
-                X_train = y_train = X_val = y_val = X_test = y_test = None
-                asset_ids_train = asset_ids_val = asset_ids_test = None
-                if train_df is not None and len(train_df) >= self.sequence_length:
-                    X_train, y_train = self.processing_strategy.process(train_df)
-                    aid_out = getattr(self.processing_strategy, "_asset_ids_out", None)
-                    asset_ids_train = aid_out if aid_out is not None else None
-                if val_df is not None and len(val_df) >= self.sequence_length:
-                    X_val, y_val = self.processing_strategy.process(val_df)
-                    aid_out = getattr(self.processing_strategy, "_asset_ids_out", None)
-                    asset_ids_val = aid_out if aid_out is not None else None
-                if test_df is not None and len(test_df) >= self.sequence_length:
-                    X_test, y_test = self.processing_strategy.process(test_df)
-                    aid_out = getattr(self.processing_strategy, "_asset_ids_out", None)
-                    asset_ids_test = aid_out if aid_out is not None else None
-                # Infer n_samples for downstream only if needed (not used in this branch further)
-                n_samples = (len(X_train) if X_train is not None else 0) + (len(X_val) if X_val is not None else 0)
-                train_end = len(X_train) if X_train is not None else 0
-                val_end = train_end + (len(X_val) if X_val is not None else 0)
+
+                # 2c. Process the splits into tensors
+                processed_data["data_splits"] = self._process_splits(processed_data.pop("_temp_splits"))
             else:
-                # GPU or memmap path provides sizes
-                if X is not None:
-                    n_samples = len(X)
-                else:
-                    n_samples = n_timesteps - self.sequence_length + 1
-                train_end = int(n_samples * self.train_ratio)
-                val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+                # GPU PATH or other path where data is already handled or not used
+                if data is not None:
+                    del data
+                data = None
+                gc.collect()
 
-            if not cpu_row_split:
-                if X is not None:
-                    X_train = X[:train_end]
-                    y_train = y[:train_end]
-                    X_val = X[train_end:val_end]
-                    y_val = y[train_end:val_end]
-                    X_test = X[val_end:]
-                    y_test = y[val_end:]
-                else:
-                    X_train = X_val = X_test = None
-                    y_train = y_val = y_test = None
+            # 3. Create Datasets
+            datasets = self._create_datasets(processed_data, gdata is None)
 
-            if not cpu_row_split:
-                if X is not None:
-                    asset_ids_train = asset_ids_val = asset_ids_test = None
-                    if self.mode == "pretrain":
-                        import numpy as np
-                        asset_ids_seq = getattr(self.processing_strategy, "_asset_ids_out", None)
-                        if asset_ids_seq is not None and len(asset_ids_seq) == n_samples:
-                            asset_ids_train = asset_ids_seq[:train_end]
-                            asset_ids_val = asset_ids_seq[train_end:val_end]
-                            asset_ids_test = asset_ids_seq[val_end:]
-                        else:
-                            asset_ids_train = np.zeros(len(X_train), dtype=np.int64)
-                            asset_ids_val = np.zeros(len(X_val), dtype=np.int64)
-                            asset_ids_test = np.zeros(len(X_test), dtype=np.int64)
-                else:
-                    asset_ids_train = asset_ids_val = asset_ids_test = None
+            # 4. Create Loaders
+            loaders = self._create_loaders(datasets, processed_data)
 
+            # Cleanup
+            del gdata, processed_data
+            gc.collect()
+
+            return loaders
+
+        except Exception as e:
+            if logger:
+                logger.error(f"Data loading failed: {type(e).__name__}: {e}", indent=1)
+            gc.collect()
+            raise
+
+    def _log_memory(self, prefix: str) -> None:
+        """Log memory usage if verbose and psutil available."""
+        if psutil and self.verbose:
+            mi = psutil.Process().memory_info()
+            if logger:
+                logger.info(f"{prefix}: RSS={mi.rss/1e9:.2f}GB", indent=2)
+
+    def _load_data(self) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """Load data from parquet file."""
+        if self.verbose and logger:
+            logger.info("Reading parquet file", indent=1)
+
+        gdata = None
+        data = None
+
+        if self.use_gpu_preprocess:
+            try:
+                import cudf  # type: ignore
+                gdata = str(self.data_path)
+                if self.verbose and logger:
+                    logger.info("Using cuDF GPU processing", indent=2)
+            except Exception as ge:
+                if self.verbose and logger:
+                    logger.warning(f"GPU read failed, using CPU: {type(ge).__name__}", indent=2)
+                gdata = None
+
+        if gdata is None:
+            data = pd.read_parquet(self.data_path, engine="pyarrow")
             if self.verbose and logger:
-                logger.info("Building datasets", indent=1)
-            if self.mode == "pretrain":
-                if self.use_streaming_fallback:
-                    if self.verbose and logger:
-                        logger.info("Using streaming mode", indent=2)
-                    full_dataset = MemoryEfficientPretrainDataset(
-                        parquet_path=str(self.data_path),
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        stride=1,
-                    )
-                    n_samples = len(full_dataset)
-                    train_end = int(n_samples * self.train_ratio)
-                    val_end = int(n_samples * (self.train_ratio + self.val_ratio))
-                    
-                    from torch.utils.data import Subset
-                    train_dataset = Subset(full_dataset, range(0, train_end))
-                    val_dataset = Subset(full_dataset, range(train_end, val_end))
-                    test_dataset = Subset(full_dataset, range(val_end, n_samples))
-                elif features_path is not None:
-                    # Local import to avoid environment-specific import errors
-                    try:
-                        from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
-                    except Exception:
-                        try:
-                            from src.data.pretrain_window_dataset import PretrainWindowDataset  # type: ignore
-                        except Exception as imp_err:
-                            raise ImportError(
-                                f"Failed to import PretrainWindowDataset: {imp_err}"
-                            )
-                    train_dataset = PretrainWindowDataset(
-                        features_memmap_path=features_path,
-                        asset_ids_memmap_path=asset_ids_path,
-                        n_timesteps=n_timesteps,
-                        n_features=n_features,
-                        sequence_length=self.sequence_length,
-                        start_index=0,
-                        end_index=train_end,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                        stride=self.stride,
-                    )
-                    val_dataset = PretrainWindowDataset(
-                        features_memmap_path=features_path,
-                        asset_ids_memmap_path=asset_ids_path,
-                        n_timesteps=n_timesteps,
-                        n_features=n_features,
-                        sequence_length=self.sequence_length,
-                        start_index=train_end,
-                        end_index=val_end,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                        stride=self.stride,
-                        deterministic=True,
-                    )
-                    test_dataset = PretrainWindowDataset(
-                        features_memmap_path=features_path,
-                        asset_ids_memmap_path=asset_ids_path,
-                        n_timesteps=n_timesteps,
-                        n_features=n_features,
-                        sequence_length=self.sequence_length,
-                        start_index=val_end,
-                        end_index=n_samples,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                        stride=self.stride,
-                        deterministic=True,
-                    )
-                else:
-                    train_dataset = PretrainDataset(
-                        X_train,
-                        asset_ids=asset_ids_train,
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                    ) if X_train is not None else None
-                    val_dataset = PretrainDataset(
-                        X_val,
-                        asset_ids=asset_ids_val,
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                    ) if X_val is not None else None
-                    test_dataset = PretrainDataset(
-                        X_test,
-                        asset_ids=asset_ids_test,
-                        sequence_length=self.sequence_length,
-                        masking_ratio=self.masking_ratio,
-                        volatility_lookahead=self.volatility_lookahead,
-                        smart_masking_prob=self.smart_masking_prob,
-                        cross_asset_masking_prob=self.cross_asset_masking_prob,
-                    ) if X_test is not None else None
+                logger.info(f"Loaded {data.shape[0]} rows", indent=2)
+
+        return data, gdata
+
+    def _process_data(
+        self,
+        data: Optional[pd.DataFrame],
+        gdata: Optional[str]
+    ) -> Dict[str, Any]:
+        """Process raw data into features and targets or memory maps."""
+        if self.verbose and logger:
+            logger.info("Processing sequences", indent=1)
+
+        result = {
+            "features_path": None,
+            "asset_ids_path": None,
+            "n_timesteps": None,
+            "n_features": None,
+            "X": None,
+            "y": None,
+            "data_splits": None
+        }
+
+        if gdata is not None and self.use_gpu_preprocess:
+            features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
+            result.update({
+                "features_path": features_path,
+                "asset_ids_path": asset_ids_path,
+                "n_timesteps": n_timesteps,
+                "n_features": n_features
+            })
+            if self.verbose and logger:
+                logger.info(f"Features: {n_timesteps} × {n_features}", indent=2)
+                self._log_memory("After GPU process")
+
+        elif data is not None:
+            # CPU processing logic split to ensure memory safety
+            splits = self._create_splits(data)
+
+            # IMPORTANT: The caller is responsible for deleting 'data' immediately
+            # after we return from _create_splits if we were refactoring further,
+            # but here we can't easily signal the caller to delete 'data' halfway.
+            # So instead, we just create the splits here and return them.
+            # But wait, we need to process the splits.
+            # The 'data' variable is a reference.
+
+            # To strictly follow the "Delete Data -> Process Splits" flow:
+            # We must process splits AFTER 'data' is deleted.
+            # Since we cannot delete the caller's reference to 'data',
+            # we rely on the caller to not use 'data' anymore, but the object exists.
+
+            # However, we can modify the flow:
+            # We return the splits (DataFrames) in a temporary structure,
+            # then the caller deletes 'data', then calls a new method to process splits.
+            # BUT, to keep the interface simple, we can do the splitting and processing here
+            # IF we accept that 'data' reference is still held by caller.
+            # The issue is that `_process_data` takes `data`.
+
+            # Solution: We can't delete caller's reference.
+            # The original code had everything in one function so it could `del data`.
+            # To replicate this, we need to ensure `data` is not held.
+            # Since `data` is passed as argument, we can't clear caller's scope.
+            pass
+
+            # Since I am already inside _process_data, I will proceed with the implementation
+            # that assumes the caller will handle `del data` if I return early? No.
+
+            # The only way to strictly enforce "Create Splits -> Delete Data -> Process"
+            # with this signature is if we don't process here, OR if the caller handles the flow.
+            # I will refactor `_process_data` to `_create_splits_and_process`.
+            # Actually, I'll stick to the current implementation but verify correct behavior:
+            # 1. Create split copies (train_df, etc.)
+            # 2. del data (removes local reference)
+            # 3. gc.collect()
+            # 4. process splits.
+
+            # This works if the caller doesn't keep other references.
+            # In `create_data_loaders`, `data` is a local var.
+            # If `_process_data` finishes, `data` is still in `create_data_loaders`.
+            # So `del data` inside `_process_data` only deletes the local arg.
+            # The large object remains in memory until `_process_data` returns and `create_data_loaders` deletes it.
+            # BUT `_process_data` creates the tensors! So we have Peak = Data + Splits + Tensors.
+
+            # To fix this, `_process_data` for CPU path must NOT do the tensor processing.
+            # It should just return the splits.
+            # Then `create_data_loaders` deletes `data`.
+            # Then we call a NEW method `_process_splits`.
+
+            splits = self._create_splits(data)
+            # We return the splits in a special key to signal the caller
+            result["_temp_splits"] = splits
+
+        return result
+
+    def _create_splits(self, data: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Create train/val/test splits from dataframe."""
+        n_rows = len(data)
+        train_row_end = int(n_rows * self.train_ratio)
+        val_row_end = int(n_rows * (self.train_ratio + self.val_ratio))
+
+        train_df = data.iloc[:train_row_end].copy()
+        val_df = data.iloc[train_row_end:val_row_end].copy()
+        test_df = data.iloc[val_row_end:].copy()
+
+        return {
+            "train": train_df,
+            "val": val_df,
+            "test": test_df
+        }
+
+    def _process_splits(self, splits: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+        """Process splits into tensors."""
+        return {
+            "train": self._process_split(splits["train"]),
+            "val": self._process_split(splits["val"]),
+            "test": self._process_split(splits["test"])
+        }
+
+    def _process_split(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Process a single data split."""
+        if len(df) < self.sequence_length:
+            return {"X": None, "y": None, "asset_ids": None}
+
+        X, y = self.processing_strategy.process(df)
+        aid_out = getattr(self.processing_strategy, "_asset_ids_out", None)
+
+        return {
+            "X": X,
+            "y": y,
+            "asset_ids": aid_out
+        }
+
+    def _create_datasets(
+        self,
+        processed_data: Dict[str, Any],
+        is_streaming: bool
+    ) -> Dict[str, Any]:
+        """Create PyTorch datasets from processed data."""
+        if self.verbose and logger:
+            logger.info("Building datasets", indent=1)
+
+        # 1. Determine split indices if using memmap or streaming
+        n_samples = 0
+        if processed_data["n_timesteps"] is not None:
+             n_samples = processed_data["n_timesteps"] - self.sequence_length + 1
+        elif is_streaming or self.use_streaming_fallback:
+             # Streaming length estimation logic would go here,
+             # but we handle it inside dataset creation logic for streaming
+             pass
+
+        train_end = int(n_samples * self.train_ratio)
+        val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+
+        train_dataset = val_dataset = test_dataset = None
+
+        if self.mode == "pretrain":
+            if self.use_streaming_fallback:
+                train_dataset, val_dataset, test_dataset = self._create_streaming_pretrain_datasets()
+            elif processed_data["features_path"] is not None:
+                train_dataset, val_dataset, test_dataset = self._create_memmap_pretrain_datasets(
+                    processed_data, train_end, val_end, n_samples
+                )
             else:
-                if self.use_streaming_fallback:
-                    print("  Using streaming fallback mode (direct parquet read)")
-                    full_dataset = MemoryEfficientFinetuneDataset(
-                        parquet_path=str(self.data_path),
-                        feature_columns=self.processing_strategy.feature_columns,
-                        target_column=self.processing_strategy.target_column,
-                        sequence_length=self.sequence_length,
-                        stride=1,
-                    )
-                    n_samples = len(full_dataset)
-                    train_end = int(n_samples * self.train_ratio)
-                    val_end = int(n_samples * (self.train_ratio + self.val_ratio))
-                    
-                    from torch.utils.data import Subset
-                    train_dataset = Subset(full_dataset, range(0, train_end))
-                    val_dataset = Subset(full_dataset, range(train_end, val_end))
-                    test_dataset = Subset(full_dataset, range(val_end, n_samples))
-                else:
-                    train_dataset = FineTuneDataset(X_train, y_train)
-                    val_dataset = FineTuneDataset(X_val, y_val)
-                    test_dataset = FineTuneDataset(X_test, y_test)
-
-            if self.verbose and logger:
-                logger.info("Creating DataLoaders", indent=1)
-            use_streaming_memmap = features_path is not None and self.mode == "pretrain"
-            streaming_active = self.use_streaming_fallback
-            if self.verbose:
-                if self.use_streaming_fallback:
-                    backend = "Streaming Parquet"
-                    dataset_type = "MemoryEfficientPretrainDataset"
-                elif use_streaming_memmap:
-                    backend = "Memmap Windows (PretrainWindowDataset)"
-                    dataset_type = "PretrainWindowDataset"
-                else:
-                    backend = "In-Memory Dataset"
-                    dataset_type = "PretrainDataset"
+                train_dataset, val_dataset, test_dataset = self._create_memory_pretrain_datasets(
+                    processed_data["data_splits"]
+                )
+        else:
+            if self.use_streaming_fallback:
+                train_dataset, val_dataset, test_dataset = self._create_streaming_finetune_datasets()
+            else:
+                train_dataset, val_dataset, test_dataset = self._create_memory_finetune_datasets(
+                    processed_data["data_splits"]
+                )
                 
-                if logger:
-                    logger.info(f"Backend: {backend}", indent=2)
+        return {
+            "train": train_dataset,
+            "val": val_dataset,
+            "test": test_dataset
+        }
 
-            workers = 0 if streaming_active else self.num_workers
-            pin_mem = self.num_workers > 0 and not streaming_active
-            do_shuffle = self.shuffle_train
+    def _create_streaming_pretrain_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
+        if self.verbose and logger:
+            logger.info("Using streaming mode", indent=2)
             
-            train_loader = DataLoader(
-                train_dataset,
+        full_dataset = MemoryEfficientPretrainDataset(
+            parquet_path=str(self.data_path),
+            sequence_length=self.sequence_length,
+            masking_ratio=self.masking_ratio,
+            volatility_lookahead=self.volatility_lookahead,
+            stride=1,
+        )
+        n_samples = len(full_dataset)
+        train_end = int(n_samples * self.train_ratio)
+        val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+
+        return (
+            Subset(full_dataset, range(0, train_end)),
+            Subset(full_dataset, range(train_end, val_end)),
+            Subset(full_dataset, range(val_end, n_samples))
+        )
+
+    def _create_memmap_pretrain_datasets(
+        self,
+        processed_data: Dict[str, Any],
+        train_end: int,
+        val_end: int,
+        n_samples: int
+    ) -> Tuple[Dataset, Dataset, Dataset]:
+
+        # Local import to avoid environment-specific import errors
+        try:
+            from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
+        except Exception:
+            try:
+                from src.data.pretrain_window_dataset import PretrainWindowDataset  # type: ignore
+            except Exception as imp_err:
+                raise ImportError(f"Failed to import PretrainWindowDataset: {imp_err}")
+
+        common_args = {
+            "features_memmap_path": processed_data["features_path"],
+            "asset_ids_memmap_path": processed_data["asset_ids_path"],
+            "n_timesteps": processed_data["n_timesteps"],
+            "n_features": processed_data["n_features"],
+            "sequence_length": self.sequence_length,
+            "masking_ratio": self.masking_ratio,
+            "volatility_lookahead": self.volatility_lookahead,
+            "smart_masking_prob": self.smart_masking_prob,
+            "cross_asset_masking_prob": self.cross_asset_masking_prob,
+            "stride": self.stride,
+        }
+
+        train_ds = PretrainWindowDataset(
+            start_index=0,
+            end_index=train_end,
+            **common_args
+        )
+        val_ds = PretrainWindowDataset(
+            start_index=train_end,
+            end_index=val_end,
+            deterministic=True,
+            **common_args
+        )
+        test_ds = PretrainWindowDataset(
+            start_index=val_end,
+            end_index=n_samples,
+            deterministic=True,
+            **common_args
+        )
+
+        return train_ds, val_ds, test_ds
+
+    def _create_memory_pretrain_datasets(self, splits: Dict[str, Any]) -> Tuple[Dataset, Dataset, Dataset]:
+        def create_ds(split_data):
+            if split_data["X"] is None:
+                return None
+            return PretrainDataset(
+                split_data["X"],
+                asset_ids=split_data["asset_ids"],
+                sequence_length=self.sequence_length,
+                masking_ratio=self.masking_ratio,
+                volatility_lookahead=self.volatility_lookahead,
+                smart_masking_prob=self.smart_masking_prob,
+                cross_asset_masking_prob=self.cross_asset_masking_prob,
+            )
+
+        return (
+            create_ds(splits["train"]),
+            create_ds(splits["val"]),
+            create_ds(splits["test"])
+        )
+
+    def _create_streaming_finetune_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
+        print("  Using streaming fallback mode (direct parquet read)")
+        full_dataset = MemoryEfficientFinetuneDataset(
+            parquet_path=str(self.data_path),
+            feature_columns=self.processing_strategy.feature_columns,
+            target_column=self.processing_strategy.target_column,
+            sequence_length=self.sequence_length,
+            stride=1,
+        )
+        n_samples = len(full_dataset)
+        train_end = int(n_samples * self.train_ratio)
+        val_end = int(n_samples * (self.train_ratio + self.val_ratio))
+
+        return (
+            Subset(full_dataset, range(0, train_end)),
+            Subset(full_dataset, range(train_end, val_end)),
+            Subset(full_dataset, range(val_end, n_samples))
+        )
+
+    def _create_memory_finetune_datasets(self, splits: Dict[str, Any]) -> Tuple[Dataset, Dataset, Dataset]:
+        def create_ds(split_data):
+            if split_data["X"] is None:
+                return None
+            return FineTuneDataset(split_data["X"], split_data["y"])
+
+        return (
+            create_ds(splits["train"]),
+            create_ds(splits["val"]),
+            create_ds(splits["test"])
+        )
+
+    def _create_loaders(
+        self,
+        datasets: Dict[str, Dataset],
+        processed_data: Dict[str, Any]
+    ) -> Dict[str, DataLoader]:
+        """Create DataLoader instances."""
+        if self.verbose and logger:
+            logger.info("Creating DataLoaders", indent=1)
+
+        use_streaming_memmap = processed_data.get("features_path") is not None and self.mode == "pretrain"
+        streaming_active = self.use_streaming_fallback
+
+        if self.verbose:
+            self._log_backend_info(streaming_active, use_streaming_memmap)
+
+        workers = 0 if streaming_active else self.num_workers
+        pin_mem = self.num_workers > 0 and not streaming_active
+        do_shuffle = self.shuffle_train
+
+        loaders = {}
+
+        # Train loader
+        if datasets["train"]:
+            loaders["train"] = DataLoader(
+                datasets["train"],
                 batch_size=self.batch_size,
                 shuffle=do_shuffle,
                 num_workers=workers,
@@ -381,9 +516,13 @@ class DataLoaderFactory:
                 prefetch_factor=4 if workers > 0 else None,
                 drop_last=False,
             )
+        else:
+            loaders["train"] = None
 
-            val_loader = DataLoader(
-                val_dataset,
+        # Val loader
+        if datasets["val"]:
+            loaders["val"] = DataLoader(
+                datasets["val"],
                 batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=workers,
@@ -391,9 +530,13 @@ class DataLoaderFactory:
                 persistent_workers=False,
                 prefetch_factor=3 if workers > 0 else None,
             )
+        else:
+            loaders["val"] = None
 
-            test_loader = DataLoader(
-                test_dataset,
+        # Test loader
+        if datasets["test"]:
+            loaders["test"] = DataLoader(
+                datasets["test"],
                 batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=workers,
@@ -401,25 +544,21 @@ class DataLoaderFactory:
                 persistent_workers=False,
                 prefetch_factor=3 if workers > 0 else None,
             )
+        else:
+            loaders["test"] = None
 
-            if X is not None:
-                del X, y, X_train, y_train, X_val, y_val, X_test, y_test
-            if 'data' in locals():
-                del data
-            if 'gdata' in locals():
-                del gdata
-            gc.collect()
+        return loaders
 
-            return {
-                "train": train_loader,
-                "val": val_loader,
-                "test": test_loader,
-            }
-        except Exception as e:
-            if logger:
-                logger.error(f"Data loading failed: {type(e).__name__}: {e}", indent=1)
-            gc.collect()
-            raise
+    def _log_backend_info(self, streaming_active: bool, use_streaming_memmap: bool) -> None:
+        if streaming_active:
+            backend = "Streaming Parquet"
+        elif use_streaming_memmap:
+            backend = "Memmap Windows (PretrainWindowDataset)"
+        else:
+            backend = "In-Memory Dataset"
+
+        if logger:
+            logger.info(f"Backend: {backend}", indent=2)
 
     def get_dataset_info(self) -> Dict[str, int]:
         """Get information about the dataset.
@@ -430,7 +569,6 @@ class DataLoaderFactory:
         data = pd.read_parquet(self.data_path, engine="pyarrow")
         X, y = self.processing_strategy.process(data)
 
-        import numpy as np
         return {
             "total_samples": len(X),
             "sequence_length": X.shape[1],

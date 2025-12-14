@@ -120,3 +120,33 @@ def test_gradient_checkpointing(device):
     outputs = model(x, asset_ids)
     
     assert outputs is not None
+
+
+def test_regressor_gradient_checkpointing(device):
+    """Test gradient checkpointing flag in regressor."""
+    model = MambaRegressor(
+        input_dim=16,
+        d_model=64,
+        d_state=16,
+        d_conv=4,
+        n_layers=2,
+        output_dim=1,
+        use_gradient_checkpointing=True,
+    ).to(device)
+
+    assert model.use_gradient_checkpointing is True
+
+    # Check if forward pass works with checkpointing
+    x = torch.randn(2, 96, 16).to(device)
+    asset_ids = torch.zeros(2, dtype=torch.long).to(device)
+
+    # Train mode should trigger checkpointing
+    model.train()
+    outputs_train = model(x, asset_ids)
+    assert outputs_train is not None
+    assert outputs_train.shape == (2, 1)
+
+    # Eval mode should not trigger checkpointing (but should still work)
+    model.eval()
+    outputs_eval = model(x, asset_ids)
+    assert outputs_eval is not None
