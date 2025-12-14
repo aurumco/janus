@@ -62,6 +62,8 @@ def test_pretrain_dataset_masking():
         asset_ids=asset_ids,
         sequence_length=256,
         masking_ratio=0.15,
+        smart_masking_prob=0.0,
+        cross_asset_masking_prob=0.0,
     )
     
     sample = dataset[0]

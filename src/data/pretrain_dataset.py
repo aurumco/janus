@@ -43,6 +43,38 @@ class PretrainDataset(Dataset):
         self.price_column_idx = price_column_idx
         self.n_samples, self.seq_len, self.n_features = self.X.shape
 
+        self._precompute_volatility_targets()
+
+    def _precompute_volatility_targets(self) -> None:
+        """Precompute volatility targets for all samples to speed up training."""
+        self.volatility_targets = torch.zeros(self.n_samples, dtype=torch.float32)
+        close_price_idx = min(3, self.n_features - 1)
+
+        # Vectorized calculation would be complex due to sliding window on already windowed data
+        # But we can optimize the loop significantly or use a rolling calculation if X was contiguous.
+        # Since X is (N, seq_len, features), and we look at X[idx+1:idx+lookahead],
+        # we are effectively looking at next samples.
+
+        # We can accept a small startup cost for faster iteration.
+        # Let's do a simple loop for now, but optimize inside.
+
+        for idx in range(self.n_samples):
+            future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
+            if future_end_idx > idx + 5:
+                # Direct slicing on the tensor is efficient enough for init time
+                future_prices = self.X[
+                    idx + 1 : future_end_idx,
+                    :,
+                    close_price_idx,
+                ]
+
+                if len(future_prices) > 5:
+                    # Calculate returns along time dimension (dim 0 of the slice)
+                    # future_prices shape: (lookahead, seq_len)
+                    returns = future_prices[1:] - future_prices[:-1]
+                    # std over all elements
+                    self.volatility_targets[idx] = torch.std(returns) + 1e-6
+
     def __len__(self) -> int:
         """Get dataset length.
 
@@ -71,24 +103,8 @@ class PretrainDataset(Dataset):
             mask_binary = torch.zeros(self.seq_len, dtype=torch.bool)
             masked_sequence = original_sequence
         
-        future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
-        if future_end_idx > idx + 5:
-            close_price_idx = min(3, self.n_features - 1)
-            future_prices = self.X[
-                idx + 1 : future_end_idx,
-                :,
-                close_price_idx,
-            ]
-            
-            if len(future_prices) > 5:
-                returns = future_prices[1:] - future_prices[:-1]
-                volatility = torch.std(returns) + 1e-6
-            else:
-                volatility = torch.tensor(0.0)
-        else:
-            volatility = torch.tensor(0.0)
-        
-        volatility = volatility * 100.0
+        # Use precomputed volatility
+        volatility = self.volatility_targets[idx] * 100.0
 
         return {
             "input_sequence": masked_sequence,
