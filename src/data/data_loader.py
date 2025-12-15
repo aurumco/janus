@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover
     psutil = None  # type: ignore
 
 from .base_strategy import DataProcessingStrategy
-from .finetune_dataset import FineTuneDataset
+from .finetune_dataset import FineTuneDataset, LazyFineTuneDataset
 from .pretrain_dataset import PretrainDataset
 from .memory_efficient_dataset import (
     MemoryEfficientPretrainDataset,
@@ -304,13 +304,21 @@ class DataLoaderFactory:
         if len(df) < self.sequence_length:
             return {"X": None, "y": None, "asset_ids": None}
 
-        X, y = self.processing_strategy.process(df)
+        # Check if we should use lazy processing for finetune mode
+        if self.mode == "finetune" and not self.use_streaming_fallback and hasattr(self.processing_strategy, "process_lazy"):
+            X, y = self.processing_strategy.process_lazy(df)
+            is_lazy = True
+        else:
+            X, y = self.processing_strategy.process(df)
+            is_lazy = False
+
         aid_out = getattr(self.processing_strategy, "_asset_ids_out", None)
 
         return {
             "X": X,
             "y": y,
-            "asset_ids": aid_out
+            "asset_ids": aid_out,
+            "is_lazy": is_lazy
         }
 
     def _create_datasets(
@@ -475,7 +483,15 @@ class DataLoaderFactory:
         def create_ds(split_data):
             if split_data["X"] is None:
                 return None
-            return FineTuneDataset(split_data["X"], split_data["y"])
+
+            if split_data.get("is_lazy", False):
+                return LazyFineTuneDataset(
+                    features=split_data["X"],
+                    targets=split_data["y"],
+                    sequence_length=self.sequence_length
+                )
+            else:
+                return FineTuneDataset(split_data["X"], split_data["y"])
 
         return (
             create_ds(splits["train"]),
