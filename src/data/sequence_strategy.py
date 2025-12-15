@@ -214,3 +214,58 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if X.dtype != np.float32:
             X = X.astype(np.float32, copy=False)
         return X, y
+
+    def process_lazy(self, data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """Convert DataFrame to raw features and targets for lazy windowing.
+
+        Args:
+            data: Input DataFrame with features and target.
+
+        Returns:
+            Tuple of (features, targets) where:
+            - features has shape (n_timesteps, n_features)
+            - targets has shape (n_timesteps,)
+        """
+        if not self.validate(data):
+            missing = set((self.feature_columns or []) + ([self.target_column] if self.target_column else [])) - set(data.columns)
+            raise ValueError(f"Missing required columns: {missing}")
+
+        if self.feature_columns is None:
+            cols = [c for c in data.columns if c not in ('asset_id', 'timestamp')]
+            if self.target_column is not None:
+                cols = [c for c in cols if c != self.target_column]
+            feature_cols = cols
+        else:
+            feature_cols = [c for c in self.feature_columns if c not in ('asset_id', 'timestamp')]
+
+        features = data[feature_cols].values.astype(np.float32)
+
+        if self.target_column is None or self.target_column not in data.columns:
+            targets = np.zeros(len(data), dtype=np.float32)
+        else:
+            targets = data[self.target_column].values.astype(np.float32)
+
+        # Handle asset_ids if present (for consistency, though LazyDataset currently doesn't use them)
+        if 'asset_id' in data.columns:
+            # We don't return asset_ids in this signature yet, but we could stash them
+            self._asset_ids_full = data['asset_id'].values
+
+            # For compatibility with existing _process_split which looks at _asset_ids_out:
+            # _asset_ids_out should match the sequences.
+            # Sequences are [0:L], [1:L+1]...
+            # Asset ID for sequence i is usually the ID of the asset (constant for the series)
+            # or the ID at the last timestep?
+            # Existing process() sets:
+            # self._asset_ids_out = asset_ids_raw[self.sequence_length - 1 : self.sequence_length - 1 + X.shape[0]]
+            # This implies asset_id is taken at the prediction point.
+
+            if len(features) >= self.sequence_length:
+                 start_idx = self.sequence_length - 1
+                 end_idx = start_idx + (len(features) - self.sequence_length + 1)
+                 self._asset_ids_out = self._asset_ids_full[start_idx : end_idx]
+            else:
+                 self._asset_ids_out = None
+        else:
+            self._asset_ids_out = None
+
+        return features, targets
