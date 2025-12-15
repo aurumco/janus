@@ -28,6 +28,7 @@ except Exception:
     pass
 
 from src.config.config_loader import ConfigLoader
+from src.config.mode_config import ModeConfig
 from src.data.data_loader import DataLoaderFactory
 from src.data.sequence_strategy import SequenceProcessingStrategy
 from src.evaluation.evaluator import ModelEvaluator
@@ -113,33 +114,13 @@ def main() -> None:
         device_id=full_config.get('device.device_id', 0)
     )
     if device.type == 'cuda':
-        try:
-            _ = torch.tensor(0.0, device=device)
-            torch.cuda.synchronize()
-        except Exception:
-            pass
+        # Sanity check for CUDA
+        _ = torch.tensor(0.0, device=device)
+        torch.cuda.synchronize()
 
     # Get mode-specific config section
     mode = args.mode
     config_prefix = mode
-    
-    # Create a view into the mode-specific config
-    class ModeConfig:
-        def __init__(self, full_cfg, prefix):
-            self.full_cfg = full_cfg
-            self.prefix = prefix
-        
-        def get(self, key, default=None):
-            """Fetch config with mode prefix first, then fall back to global.
-
-            Example: if prefix='pretrain' and key='data.path', this checks
-            'pretrain.data.path' first, then 'data.path'.
-            """
-            mode_key = f"{self.prefix}.{key}"
-            mode_val = self.full_cfg.get(mode_key, None)
-            if mode_val is not None:
-                return mode_val
-            return self.full_cfg.get(key, default)
     
     config = ModeConfig(full_config, config_prefix)
 

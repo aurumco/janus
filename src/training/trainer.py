@@ -312,11 +312,6 @@ class Trainer:
             
             total_loss += loss_value
             
-            if batch_idx > 0 and batch_idx % 1000 == 0:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
         num_batches = len(train_loader)
         if total_loss == 0 and num_batches > 0:
             print("\nWARNING: All batches had zero loss!")
@@ -326,9 +321,6 @@ class Trainer:
         
         progress.close()
         
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
@@ -396,9 +388,6 @@ class Trainer:
         avg_loss = total_loss / len(val_loader)
         vprogress.close()
         
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
