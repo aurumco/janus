@@ -68,8 +68,13 @@ class Trainer:
         self.initial_lr = optimizer.param_groups[0]['lr']
         self.use_amp = use_amp
         self.accumulation_steps = max(1, accumulation_steps)
+
+        # Pre-calculate AMP dtype to avoid overhead in training loop
+        self.amp_dtype = torch.float16
         if self.use_amp:
             self.scaler = AmpGradScaler(device="cuda")
+            if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+                self.amp_dtype = torch.bfloat16
         else:
             self.scaler = None
         self.gradient_clip = gradient_clip
@@ -254,28 +259,36 @@ class Trainer:
             else:
                 inputs, targets = batch_data
                 batch = {"targets": targets}
-            # Move data to device
+            # Move data to device (non_blocking allows overlap)
             if isinstance(batch, dict):
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
             else:
-                inputs = inputs.to(self.device)
-                batch["targets"] = batch["targets"].to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
             if self.use_amp:
-                dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-                with amp_autocast(device_type="cuda", dtype=dtype):
+                with amp_autocast(device_type="cuda", dtype=self.amp_dtype):
                     outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     
                     if isinstance(loss_output, dict):
                         loss = loss_output["total_loss"]
-                        for key, val in loss_output.items():
-                            if key != "total_loss":
-                                loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                        # Defer .item() calls to avoid GPU synchronization
+                        with torch.no_grad():
+                            for key, val in loss_output.items():
+                                if key != "total_loss":
+                                    # Initialize tensor on device if needed
+                                    if key not in loss_components:
+                                        loss_components[key] = torch.tensor(0.0, device=self.device)
+                                    loss_components[key] += val.detach()
                     else:
                         loss = loss_output
                 
+                # Keep original unscaled loss for metrics
+                # Since loss is about to be divided by accumulation_steps for backward
+                metrics_loss = loss.detach()
+
                 loss = loss / self.accumulation_steps
                 self.scaler.scale(loss).backward()
                 
@@ -296,23 +309,54 @@ class Trainer:
                 
                 if isinstance(loss_output, dict):
                     loss = loss_output["total_loss"]
-                    for key, val in loss_output.items():
-                        if key != "total_loss":
-                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                    with torch.no_grad():
+                        for key, val in loss_output.items():
+                            if key != "total_loss":
+                                if key not in loss_components:
+                                    loss_components[key] = torch.tensor(0.0, device=self.device)
+                                loss_components[key] += val.detach()
                 else:
                     loss = loss_output
 
-            loss_value = loss.item()
-            
+                # FIX: Added missing backward/step for non-AMP training
+                loss = loss / self.accumulation_steps
+                loss.backward()
+
+                if (batch_idx + 1) % self.accumulation_steps == 0:
+                    if self.gradient_clip:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.gradient_clip
+                        )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+            # Check for finite loss
             if not torch.isfinite(loss):
+                loss_value = loss.item()
                 print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
                 print(f"  Loss value: {loss_value}")
                 print(f"  Skipping this batch...")
                 continue
             
-            total_loss += loss_value
+            # Accumulate total loss as tensor to avoid per-batch sync
+            if isinstance(total_loss, float):
+                 total_loss = torch.tensor(0.0, device=self.device)
+
+            # Correctly accumulate loss. In AMP block, we captured metrics_loss before division.
+            # In Non-AMP block, loss was divided by accumulation_steps.
+            if self.use_amp:
+                 total_loss += metrics_loss
+            else:
+                 # In non-AMP path, loss was divided by accumulation_steps, so we multiply back
+                 total_loss += loss.detach() * self.accumulation_steps
             
         num_batches = len(train_loader)
+
+        # Convert accumulated tensors to float at the end of epoch
+        if isinstance(total_loss, torch.Tensor):
+            total_loss = total_loss.item()
+
         if total_loss == 0 and num_batches > 0:
             print("\nWARNING: All batches had zero loss!")
             avg_loss = float('nan')
@@ -324,7 +368,7 @@ class Trainer:
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
-            metrics[key] = val / len(train_loader)
+            metrics[key] = val.item() / len(train_loader)
 
         return metrics
 
@@ -360,30 +404,37 @@ class Trainer:
                     batch = {"targets": targets}
 
                 if isinstance(batch, dict):
-                    batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                     inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
                 else:
-                    inputs = inputs.to(self.device)
-                    batch["targets"] = batch["targets"].to(self.device)
+                    inputs = inputs.to(self.device, non_blocking=True)
+                    batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
                 outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
                 if isinstance(loss_output, dict):
                     loss = loss_output["total_loss"]
+                    # Defer item()
                     for key, val in loss_output.items():
                         if key != "total_loss":
-                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                            if key not in loss_components:
+                                loss_components[key] = torch.tensor(0.0, device=self.device)
+                            loss_components[key] += val.detach()
                 else:
                     loss = loss_output
 
-                loss_value = loss.item()
-                
+                # Check finite
                 if not torch.isfinite(loss):
                     print(f"\nWARNING: Non-finite loss in validation batch {batch_idx}")
                     continue
                 
-                total_loss += loss_value
+                if isinstance(total_loss, float):
+                    total_loss = torch.tensor(0.0, device=self.device)
+                total_loss += loss.detach()
+
+        if isinstance(total_loss, torch.Tensor):
+            total_loss = total_loss.item()
 
         avg_loss = total_loss / len(val_loader)
         vprogress.close()
@@ -391,7 +442,7 @@ class Trainer:
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
-            metrics[key] = val / len(val_loader)
+            metrics[key] = val.item() / len(val_loader)
 
         return metrics
 
