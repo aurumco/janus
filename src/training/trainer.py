@@ -255,12 +255,14 @@ class Trainer:
                 inputs, targets = batch_data
                 batch = {"targets": targets}
             # Move data to device
+            # Optimize: use non_blocking=True for faster host-to-device transfer
+            # This allows overlap between data transfer and GPU computation when pin_memory=True
             if isinstance(batch, dict):
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
             else:
-                inputs = inputs.to(self.device)
-                batch["targets"] = batch["targets"].to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
             if self.use_amp:
                 dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -360,11 +362,11 @@ class Trainer:
                     batch = {"targets": targets}
 
                 if isinstance(batch, dict):
-                    batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                     inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
                 else:
-                    inputs = inputs.to(self.device)
-                    batch["targets"] = batch["targets"].to(self.device)
+                    inputs = inputs.to(self.device, non_blocking=True)
+                    batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
                 outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
