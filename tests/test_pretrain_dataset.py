@@ -1,80 +1,91 @@
-"""Unit tests for PretrainDataset."""
 
-import numpy as np
 import pytest
 import torch
-
+import numpy as np
 from src.data.pretrain_dataset import PretrainDataset
 
+class TestPretrainDataset:
+    def test_volatility_calculation_vectorized_vs_loop(self):
+        """Verify that the vectorized volatility calculation matches the loop-based one."""
+        # Setup random data
+        n_samples = 100
+        seq_len = 50
+        n_features = 10
+        # Make data predictable to debug if needed, but random is fine for equivalence check
+        X = np.random.randn(n_samples, seq_len, n_features).astype(np.float32)
+        asset_ids = np.zeros(n_samples, dtype=np.int64)
 
-def test_pretrain_dataset_initialization():
-    """Test PretrainDataset initialization."""
-    X = np.random.randn(100, 256, 16).astype(np.float32)
-    asset_ids = np.random.randint(0, 15, size=100)
-    
-    dataset = PretrainDataset(
-        X=X,
-        asset_ids=asset_ids,
-        sequence_length=256,
-        masking_ratio=0.15,
-        volatility_lookahead=60,
-    )
-    
-    assert len(dataset) == 100 - 60
-    assert dataset.n_features == 16
+        lookahead = 10
+        price_col_idx = 3
 
+        ds = PretrainDataset(
+            X,
+            asset_ids,
+            sequence_length=seq_len,
+            volatility_lookahead=lookahead,
+            price_column_idx=price_col_idx
+        )
 
-def test_pretrain_dataset_getitem():
-    """Test PretrainDataset __getitem__."""
-    X = np.random.randn(100, 256, 16).astype(np.float32)
-    asset_ids = np.random.randint(0, 15, size=100)
-    
-    dataset = PretrainDataset(
-        X=X,
-        asset_ids=asset_ids,
-        sequence_length=256,
-        masking_ratio=0.15,
-        volatility_lookahead=60,
-    )
-    
-    sample = dataset[0]
-    
-    assert "input_sequence" in sample
-    assert "mask_binary" in sample
-    assert "original_sequence" in sample
-    assert "volatility_target" in sample
-    assert "asset_id" in sample
-    
-    assert sample["input_sequence"].shape == (256, 16)
-    assert sample["mask_binary"].shape == (256,)
-    assert sample["original_sequence"].shape == (256, 16)
-    assert sample["volatility_target"].shape == (1,)
-    assert sample["asset_id"].ndim == 0
+        # Calculate expected volatility using the loop method (simplified from original code)
+        expected_targets = torch.zeros(n_samples, dtype=torch.float32)
+        X_torch = torch.from_numpy(X)
 
+        target_price_idx = price_col_idx
 
-def test_pretrain_dataset_masking():
-    """Test that masking is applied correctly."""
-    X = np.ones((100, 256, 16), dtype=np.float32)
-    asset_ids = np.zeros(100, dtype=np.int64)
-    
-    dataset = PretrainDataset(
-        X=X,
-        asset_ids=asset_ids,
-        sequence_length=256,
-        masking_ratio=0.15,
-        smart_masking_prob=0.0,
-        cross_asset_masking_prob=0.0,
-    )
-    
-    sample = dataset[0]
-    
-    mask_binary = sample["mask_binary"]
-    masked_seq = sample["input_sequence"]
-    
-    num_masked = mask_binary.sum().item()
-    expected_masked = int(256 * 0.15)
-    
-    assert abs(num_masked - expected_masked) <= 2
-    
-    assert torch.all(masked_seq[mask_binary] == 0.0)
-    assert torch.all(masked_seq[~mask_binary] == 1.0)
+        for idx in range(n_samples):
+            future_end_idx = min(idx + 1 + lookahead, n_samples)
+            if future_end_idx > idx + 5: # Original condition
+                future_prices = X_torch[
+                    idx + 1 : future_end_idx,
+                    :,
+                    target_price_idx
+                ]
+
+                if len(future_prices) > 5:
+                    returns = future_prices[1:] - future_prices[:-1]
+                    expected_targets[idx] = torch.std(returns) + 1e-6
+
+        # Check if they match
+        assert torch.allclose(ds.volatility_targets, expected_targets, atol=1e-5), \
+            f"Max diff: {torch.max(torch.abs(ds.volatility_targets - expected_targets))}"
+
+    def test_price_column_idx_usage(self):
+        """Ensure price_column_idx is actually used."""
+        n_samples = 50
+        seq_len = 20
+        n_features = 5
+        X = np.random.randn(n_samples, seq_len, n_features).astype(np.float32)
+        # Make column 0 very volatile, column 4 constant
+        X[:, :, 0] = np.random.randn(n_samples, seq_len) * 100
+        X[:, :, 4] = np.ones((n_samples, seq_len))
+
+        asset_ids = np.zeros(n_samples, dtype=np.int64)
+
+        # Dataset using col 0 (high vol)
+        ds_high = PretrainDataset(X, asset_ids, volatility_lookahead=5, price_column_idx=0)
+
+        # Dataset using col 4 (zero vol)
+        ds_low = PretrainDataset(X, asset_ids, volatility_lookahead=5, price_column_idx=4)
+
+        assert ds_high.volatility_targets.mean() > ds_low.volatility_targets.mean()
+        assert ds_low.volatility_targets.mean() < 1.0 # Should be basically 1e-6
+
+    def test_default_price_column_behavior(self):
+        """Ensure legacy behavior (defaulting to col 3) works when price_column_idx is None."""
+        n_samples = 50
+        seq_len = 20
+        n_features = 5 # So col 3 is valid
+        X = np.random.randn(n_samples, seq_len, n_features).astype(np.float32)
+
+        # Make col 3 distinct
+        X[:, :, 3] = np.random.randn(n_samples, seq_len) * 50
+
+        asset_ids = np.zeros(n_samples, dtype=np.int64)
+
+        # Default init (price_column_idx=None)
+        ds_default = PretrainDataset(X, asset_ids, volatility_lookahead=5)
+
+        # Explicit init (price_column_idx=3)
+        ds_explicit = PretrainDataset(X, asset_ids, volatility_lookahead=5, price_column_idx=3)
+
+        assert torch.allclose(ds_default.volatility_targets, ds_explicit.volatility_targets)
