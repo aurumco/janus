@@ -46,34 +46,68 @@ class PretrainDataset(Dataset):
         self._precompute_volatility_targets()
 
     def _precompute_volatility_targets(self) -> None:
-        """Precompute volatility targets for all samples to speed up training."""
+        """Precompute volatility targets using vectorized operations."""
         self.volatility_targets = torch.zeros(self.n_samples, dtype=torch.float32)
         close_price_idx = min(3, self.n_features - 1)
+        lookahead = self.volatility_lookahead
 
-        # Vectorized calculation would be complex due to sliding window on already windowed data
-        # But we can optimize the loop significantly or use a rolling calculation if X was contiguous.
-        # Since X is (N, seq_len, features), and we look at X[idx+1:idx+lookahead],
-        # we are effectively looking at next samples.
+        # We process in chunks to avoid OOM on large datasets
+        # The goal is to compute std(diff(X[i+1 : i+1+lookahead])) for each i
+        # This requires sliding windows over the N dimension.
 
-        # We can accept a small startup cost for faster iteration.
-        # Let's do a simple loop for now, but optimize inside.
+        # Determine valid range for vectorized calculation
+        # We need N >= i + 1 + lookahead
+        # So i <= N - 1 - lookahead
+        # num_valid = N - lookahead
+        # Since __len__ uses (N - lookahead), we only need values up to that point.
 
-        for idx in range(self.n_samples):
-            future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
-            if future_end_idx > idx + 5:
-                # Direct slicing on the tensor is efficient enough for init time
-                future_prices = self.X[
-                    idx + 1 : future_end_idx,
-                    :,
-                    close_price_idx,
-                ]
+        num_valid = max(0, self.n_samples - lookahead)
+        if num_valid == 0:
+            return
 
-                if len(future_prices) > 5:
-                    # Calculate returns along time dimension (dim 0 of the slice)
-                    # future_prices shape: (lookahead, seq_len)
-                    returns = future_prices[1:] - future_prices[:-1]
-                    # std over all elements
-                    self.volatility_targets[idx] = torch.std(returns) + 1e-6
+        # Extract only the needed feature to save memory
+        # Shape: (N, seq_len)
+        prices = self.X[:, :, close_price_idx]
+
+        # Chunk size for processing
+        chunk_size = 5000
+
+        for start_idx in range(0, num_valid, chunk_size):
+            end_idx = min(start_idx + chunk_size, num_valid)
+
+            # We need a slice of prices that covers the windows for this chunk
+            # The chunk handles indices [start_idx, end_idx)
+            # The required window for index i is [i+1 : i+1+lookahead]
+            # So for start_idx, we need from start_idx+1
+            # For end_idx-1, we need up to (end_idx-1) + 1 + lookahead = end_idx + lookahead
+
+            # Slice range:
+            slice_start = start_idx + 1
+            slice_end = end_idx + lookahead
+
+            # Extract chunk + context
+            # Shape: (chunk_size + lookahead - 1, seq_len)
+            price_chunk = prices[slice_start:slice_end]
+
+            if price_chunk.shape[0] < lookahead:
+                continue
+
+            # Unfold to create windows
+            # Shape: (chunk_len, seq_len, lookahead)
+            # Note: unfold(dimension, size, step)
+            # We want windows of size 'lookahead' along dim 0
+            windows = price_chunk.unfold(0, lookahead, 1)
+
+            # Calculate returns: diff along the window dimension (last dim)
+            # Shape: (chunk_len, seq_len, lookahead - 1)
+            diffs = windows[:, :, 1:] - windows[:, :, :-1]
+
+            # Compute std over (seq_len, lookahead-1) dimensions
+            # Shape: (chunk_len,)
+            stds = torch.std(diffs, dim=(1, 2))
+
+            # Assign to targets
+            self.volatility_targets[start_idx:end_idx] = stds + 1e-6
 
     def __len__(self) -> int:
         """Get dataset length.
