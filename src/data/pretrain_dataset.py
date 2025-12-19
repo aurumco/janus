@@ -50,15 +50,55 @@ class PretrainDataset(Dataset):
         self.volatility_targets = torch.zeros(self.n_samples, dtype=torch.float32)
         close_price_idx = min(3, self.n_features - 1)
 
-        # Vectorized calculation would be complex due to sliding window on already windowed data
-        # But we can optimize the loop significantly or use a rolling calculation if X was contiguous.
-        # Since X is (N, seq_len, features), and we look at X[idx+1:idx+lookahead],
-        # we are effectively looking at next samples.
+        # Optimization: Use batched vectorization with torch.unfold
+        # We need at least 'lookahead' samples to perform the vectorized sliding window.
+        # For indices where idx + 1 + lookahead <= n_samples, we can vectorize.
+        cutoff = self.n_samples - self.volatility_lookahead - 1
 
-        # We can accept a small startup cost for faster iteration.
-        # Let's do a simple loop for now, but optimize inside.
+        if cutoff <= 0:
+            # Dataset too small for lookahead, fall back to loop everywhere
+            self._compute_volatility_loop(0, self.n_samples, close_price_idx)
+            return
 
-        for idx in range(self.n_samples):
+        # 1. Vectorized chunk
+        # Process in batches to keep memory usage low
+        batch_size = 1024
+
+        # Extract the relevant column once to avoid repeated slicing overhead
+        # Shape: (n_samples, seq_len)
+        all_prices = self.X[:, :, close_price_idx]
+
+        for start_idx in range(0, cutoff, batch_size):
+            end_idx = min(start_idx + batch_size, cutoff)
+
+            # We need prices from start_idx + 1 to end_idx + lookahead
+            # Slice range: [start_idx + 1, end_idx + lookahead] (exclusive end)
+            window_slice = all_prices[start_idx + 1 : end_idx + self.volatility_lookahead]
+
+            # Use unfold to create sliding windows
+            # input shape: (batch + lookahead - 1, seq_len)
+            # unfold output shape: (batch, seq_len, lookahead)
+            windows_unfolded = window_slice.unfold(0, self.volatility_lookahead, 1)
+
+            # Permute to (batch, lookahead, seq_len) so slicing matches logic
+            windows = windows_unfolded.permute(0, 2, 1)
+
+            # Calculate returns: diff along the time dimension (dim 1 of windows)
+            # shape: (batch, lookahead-1, seq_len)
+            returns = windows[:, 1:] - windows[:, :-1]
+
+            # std over (lookahead-1, seq_len) -> dims (1, 2)
+            stds = torch.std(returns, dim=(1, 2))
+
+            self.volatility_targets[start_idx:end_idx] = stds + 1e-6
+
+        # 2. Tail chunk (process remaining samples with loop)
+        if cutoff < self.n_samples:
+            self._compute_volatility_loop(cutoff, self.n_samples, close_price_idx)
+
+    def _compute_volatility_loop(self, start_idx: int, end_idx: int, close_price_idx: int) -> None:
+        """Fallback loop for volatility computation."""
+        for idx in range(start_idx, end_idx):
             future_end_idx = min(idx + 1 + self.volatility_lookahead, self.n_samples)
             if future_end_idx > idx + 5:
                 # Direct slicing on the tensor is efficient enough for init time
