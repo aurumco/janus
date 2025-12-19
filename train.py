@@ -362,6 +362,9 @@ def main() -> None:
         if loss_type == 'mse':
             criterion = nn.MSELoss()
             print("Using MSE Loss for regression")
+        elif loss_type == 'bce':
+            criterion = nn.BCEWithLogitsLoss()
+            print("Using BCE With Logits Loss for binary classification")
         elif loss_type == 'mae':
             criterion = nn.L1Loss()
             print("Using MAE Loss for regression")
