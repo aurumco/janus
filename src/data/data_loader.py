@@ -91,7 +91,13 @@ class DataLoaderFactory:
         self.sequence_length = sequence_length
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
-        self.use_gpu_preprocess = use_gpu_preprocess
+        # Force CPU preprocessing for finetuning to ensure data_splits is populated
+        # This fixes the TypeError in _create_memory_finetune_datasets
+        if mode == 'finetune':
+            self.use_gpu_preprocess = False
+        else:
+            self.use_gpu_preprocess = use_gpu_preprocess
+
         self.use_streaming_fallback = use_streaming_fallback
         self.verbose = verbose
         self.stride = stride

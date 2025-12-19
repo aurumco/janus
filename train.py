@@ -305,6 +305,7 @@ def main() -> None:
                 dropout=config.get('model.dropout'),
                 num_assets=config.get('model.num_assets', 15),
                 asset_embedding_dim=config.get('model.asset_embedding_dim', 32),
+                pretrained_checkpoint_path=checkpoint_path,
             )
         else:
             try:
