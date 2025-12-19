@@ -1,5 +1,6 @@
 """Mamba-based classifier for Bitcoin trend prediction."""
 
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
@@ -22,6 +23,7 @@ class MambaClassifier(nn.Module):
         dropout: float = 0.1,
         num_assets: int = 15,
         asset_embedding_dim: int = 32,
+        pretrained_checkpoint_path: Optional[str] = None,
     ) -> None:
         """Initialize Mamba classifier.
 
@@ -35,6 +37,7 @@ class MambaClassifier(nn.Module):
             dropout: Dropout probability.
             num_assets: Number of unique assets.
             asset_embedding_dim: Asset embedding dimension.
+            pretrained_checkpoint_path: Path to pretrained model checkpoint.
         """
         super().__init__()
 
@@ -74,6 +77,9 @@ class MambaClassifier(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, num_classes),
         )
+
+        if pretrained_checkpoint_path:
+            self._load_pretrained_weights(pretrained_checkpoint_path)
 
     def forward(self, x: torch.Tensor, asset_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward pass through the classifier.
@@ -125,3 +131,99 @@ class MambaClassifier(nn.Module):
             "total": total_params,
             "trainable": trainable_params,
         }
+
+    def _load_pretrained_weights(self, checkpoint_path: str) -> None:
+        """Load pretrained weights with dimension adaptation support.
+
+        Args:
+            checkpoint_path: Path to pretrained model checkpoint.
+        """
+        possible_paths = [
+            Path(checkpoint_path),
+            Path("/kaggle/input") / checkpoint_path,
+            Path("/kaggle/working/checkpoints/pretrain") / "best_model.pt",
+            Path("checkpoints/pretrain") / "best_model.pt",
+        ]
+
+        loaded_path = None
+        for path in possible_paths:
+            if path.exists():
+                loaded_path = path
+                break
+
+        if loaded_path is None:
+            print(f"Warning: No pretrained checkpoint found at {checkpoint_path}")
+            return
+
+        print(f"\n{'='*60}")
+        print(f"Loading pretrained weights from: {loaded_path}")
+        print(f"{'='*60}")
+
+        try:
+            checkpoint = torch.load(loaded_path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return
+
+        if "model_state_dict" in checkpoint:
+            pretrained_state = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            pretrained_state = checkpoint["state_dict"]
+        else:
+            pretrained_state = checkpoint
+
+        if isinstance(pretrained_state, torch.nn.Module):
+            pretrained_state = pretrained_state.state_dict()
+
+        backbone_keys = [
+            "asset_embedding",
+            "input_projection",
+            "input_norm",
+            "mamba_layers",
+            "layer_norms",
+        ]
+
+        model_dict = self.state_dict()
+        pretrained_dict = {}
+        skipped_count = 0
+        adapted_count = 0
+
+        for key, value in pretrained_state.items():
+            if any(bk in key for bk in backbone_keys):
+                if key in model_dict:
+                    if model_dict[key].shape == value.shape:
+                        pretrained_dict[key] = value
+                        print(f"  ✓ Loaded: {key} {tuple(value.shape)}")
+                    else:
+                        print(
+                            f"  ⚠ Dimension mismatch: {key} "
+                            f"pretrained={tuple(value.shape)} vs "
+                            f"current={tuple(model_dict[key].shape)}"
+                        )
+
+                        if "input_projection" in key or "input_norm" in key:
+                            if value.shape[0] != model_dict[key].shape[0]:
+                                print(f"    → Cannot adapt input dimensions, skipping")
+                                skipped_count += 1
+                            else:
+                                pretrained_dict[key] = value
+                                adapted_count += 1
+                        else:
+                            skipped_count += 1
+                else:
+                    print(f"  ✗ Not found in current model: {key}")
+                    skipped_count += 1
+
+        if pretrained_dict:
+            model_dict.update(pretrained_dict)
+            self.load_state_dict(model_dict, strict=False)
+
+            print(f"\n{'='*60}")
+            print(f"✓ Successfully loaded {len(pretrained_dict)} layers")
+            if adapted_count > 0:
+                print(f"⚠ Adapted {adapted_count} layers with dimension mismatches")
+            if skipped_count > 0:
+                print(f"✗ Skipped {skipped_count} incompatible layers")
+            print(f"{'='*60}\n")
+        else:
+            print("\nWarning: No compatible pretrained weights found!")

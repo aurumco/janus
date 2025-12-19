@@ -104,6 +104,13 @@ def generate_finetune_tasks(input_path: str, raw_data_dir: str, output_dir: str,
     # We want features + raw prices (Close, High, Low) for target generation
     # Inner join on timestamp
     print("Merging features and raw data...")
+
+    # Fix ambiguity if index has same name as merge column
+    if df_features.index.name == 'timestamp':
+        df_features.index.name = None
+    if df_raw.index.name == 'timestamp':
+        df_raw.index.name = None
+
     df_merged = pd.merge(df_features, df_raw[['timestamp', 'close', 'high', 'low']], on='timestamp', how='inner')
     print(f"Merged data: {df_merged.shape}")
 
