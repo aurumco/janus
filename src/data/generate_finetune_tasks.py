@@ -23,23 +23,34 @@ def generate_finetune_tasks(input_path: str, raw_data_dir: str, output_dir: str,
         print(f"Error loading features parquet: {e}")
         return
 
-    # Normalize feature columns
-    df_features.columns = [c.lower() for c in df_features.columns]
+    # Normalize feature columns (disabled to preserve mixed-case for config compatibility)
+    # df_features.columns = [c.lower() for c in df_features.columns]
 
     # Ensure timestamp exists
-    if 'timestamp' not in df_features.columns:
+    # Check lowercase version for timestamp detection if needed
+    cols_lower = {c.lower(): c for c in df_features.columns}
+
+    if 'timestamp' not in cols_lower:
         # Check if index is timestamp
         if isinstance(df_features.index, pd.DatetimeIndex):
             df_features['timestamp'] = df_features.index.astype(np.int64) // 10**6 # ms
         else:
             print("Warning: 'timestamp' column missing in features. Attempting to use index.")
             df_features = df_features.reset_index()
-            if 'timestamp' not in df_features.columns:
+            # Re-check columns after reset
+            cols_lower = {c.lower(): c for c in df_features.columns}
+
+            if 'timestamp' not in cols_lower:
                  # Try 'date' or 'time'
-                 for t_col in ['date', 'time', 'datetime']:
-                     if t_col in df_features.columns:
-                         df_features.rename(columns={t_col: 'timestamp'}, inplace=True)
+                 for t_col_key in ['date', 'time', 'datetime']:
+                     if t_col_key in cols_lower:
+                         real_col = cols_lower[t_col_key]
+                         df_features.rename(columns={real_col: 'timestamp'}, inplace=True)
                          break
+    else:
+        # Standardize timestamp column name if it exists but mixed case
+        if 'timestamp' not in df_features.columns and 'timestamp' in cols_lower:
+             df_features.rename(columns={cols_lower['timestamp']: 'timestamp'}, inplace=True)
 
     # Convert feature timestamp to ms int64 if needed
     if pd.api.types.is_datetime64_any_dtype(df_features['timestamp']):
