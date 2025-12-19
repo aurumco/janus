@@ -6,6 +6,7 @@ finetune:
     path: "/kaggle/working/tasks/finetune_task1_direction.parquet"
     target_column: "target_direction"
   model:
+    name: "MambaClassifier"
     output_dim: 1
   loss:
     type: "bce" # Use Binary Cross Entropy

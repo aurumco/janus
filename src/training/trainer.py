@@ -253,6 +253,8 @@ class Trainer:
         )
         for batch_idx, batch_data in enumerate(progress):
             # Handle both tuple (inputs, targets) and dict formats
+            # Note: For multi-task finetuning, the dataset returns a dictionary
+            # containing 'input_sequence', 'targets', and optional 'asset_id'.
             if isinstance(batch_data, dict):
                 inputs = batch_data["input_sequence"]
                 batch = batch_data
