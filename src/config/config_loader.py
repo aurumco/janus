@@ -1,7 +1,7 @@
 """Configuration loader module for managing application settings."""
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import yaml
 
@@ -23,17 +23,56 @@ class ConfigLoader:
         if not self.config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-        self._config = self._load_config()
+        self._config = self._load_config(self.config_path)
 
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file.
+    def _load_config(self, path: Path) -> Dict[str, Any]:
+        """Load configuration from YAML file, handling inheritance.
+
+        Args:
+            path: Path to the config file.
 
         Returns:
             Dictionary containing configuration parameters.
         """
-        with open(self.config_path, "r") as f:
-            config = yaml.safe_load(f)
+        with open(path, "r") as f:
+            config = yaml.safe_load(f) or {}
+
+        # Handle inheritance
+        defaults = config.get("defaults", [])
+        if defaults:
+            base_config = {}
+            # Allow defaults to be a list of strings or dicts (though usually strings)
+            for default_file in defaults:
+                if isinstance(default_file, str):
+                    # Resolve relative path
+                    default_path = path.parent / default_file
+                    if not default_path.exists():
+                        # Try relative to cwd if not found relative to config
+                        default_path = Path(default_file)
+
+                    if default_path.exists():
+                        base_data = self._load_config(default_path)
+                        self._deep_merge(base_config, base_data)
+                    else:
+                        print(f"Warning: Default config {default_file} not found.")
+
+            # Merge current config over base
+            self._deep_merge(base_config, config)
+            config = base_config
+
         return config
+
+    def _deep_merge(self, base: Dict[str, Any], update: Dict[str, Any]) -> None:
+        """Recursively merge update dict into base dict."""
+        for key, value in update.items():
+            if (
+                key in base
+                and isinstance(base[key], dict)
+                and isinstance(value, dict)
+            ):
+                self._deep_merge(base[key], value)
+            else:
+                base[key] = value
 
     def get(self, key: str, default: Optional[Any] = None) -> Any:
         """Get a configuration value by key.
