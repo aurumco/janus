@@ -256,11 +256,11 @@ class Trainer:
                 batch = {"targets": targets}
             # Move data to device
             if isinstance(batch, dict):
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
             else:
-                inputs = inputs.to(self.device)
-                batch["targets"] = batch["targets"].to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
             if self.use_amp:
                 dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -272,7 +272,10 @@ class Trainer:
                         loss = loss_output["total_loss"]
                         for key, val in loss_output.items():
                             if key != "total_loss":
-                                loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                                # Accumulate as tensor to avoid CPU-GPU sync
+                                if key not in loss_components:
+                                    loss_components[key] = torch.tensor(0.0, device=self.device)
+                                loss_components[key] += val.detach()
                     else:
                         loss = loss_output
                 
@@ -298,7 +301,10 @@ class Trainer:
                     loss = loss_output["total_loss"]
                     for key, val in loss_output.items():
                         if key != "total_loss":
-                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                            # Accumulate as tensor to avoid CPU-GPU sync
+                            if key not in loss_components:
+                                loss_components[key] = torch.tensor(0.0, device=self.device)
+                            loss_components[key] += val.detach()
                 else:
                     loss = loss_output
 
@@ -324,7 +330,10 @@ class Trainer:
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
-            metrics[key] = val / len(train_loader)
+            if isinstance(val, torch.Tensor):
+                metrics[key] = val.item() / len(train_loader)
+            else:
+                metrics[key] = val / len(train_loader)
 
         return metrics
 
@@ -360,11 +369,11 @@ class Trainer:
                     batch = {"targets": targets}
 
                 if isinstance(batch, dict):
-                    batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    batch = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                     inputs = batch["input_sequence"] if "input_sequence" in batch else inputs
                 else:
-                    inputs = inputs.to(self.device)
-                    batch["targets"] = batch["targets"].to(self.device)
+                    inputs = inputs.to(self.device, non_blocking=True)
+                    batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
                 outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
@@ -373,7 +382,10 @@ class Trainer:
                     loss = loss_output["total_loss"]
                     for key, val in loss_output.items():
                         if key != "total_loss":
-                            loss_components[key] = loss_components.get(key, 0.0) + val.item()
+                            # Accumulate as tensor
+                            if key not in loss_components:
+                                loss_components[key] = torch.tensor(0.0, device=self.device)
+                            loss_components[key] += val.detach()
                 else:
                     loss = loss_output
 
@@ -391,7 +403,10 @@ class Trainer:
         metrics = {'loss': avg_loss}
         
         for key, val in loss_components.items():
-            metrics[key] = val / len(val_loader)
+            if isinstance(val, torch.Tensor):
+                metrics[key] = val.item() / len(val_loader)
+            else:
+                metrics[key] = val / len(val_loader)
 
         return metrics
 
