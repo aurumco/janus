@@ -204,7 +204,11 @@ class DataLoaderFactory:
             "data_splits": None
         }
 
-        if gdata is not None and self.use_gpu_preprocess:
+        # Force CPU split for finetuning to ensure data_splits is populated
+        # This fixes the TypeError in _create_memory_finetune_datasets
+        force_cpu = (self.mode == 'finetune')
+
+        if gdata is not None and self.use_gpu_preprocess and not force_cpu:
             features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
             result.update({
                 "features_path": features_path,

@@ -271,7 +271,9 @@ class Trainer:
 
             if self.use_amp:
                 with amp_autocast(device_type="cuda", dtype=self.amp_dtype):
-                    outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
+                    # Explicitly pass asset_ids if available in the batch dictionary
+                    asset_ids = batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None
+                    outputs = self.model(inputs, asset_ids)
                     loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                     
                     if isinstance(loss_output, dict):
@@ -306,7 +308,9 @@ class Trainer:
                     self.scaler.update()
                     self.optimizer.zero_grad()
             else:
-                outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
+                # Explicitly pass asset_ids if available in the batch dictionary
+                asset_ids = batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None
+                outputs = self.model(inputs, asset_ids)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
                 if isinstance(loss_output, dict):
@@ -412,7 +416,9 @@ class Trainer:
                     inputs = inputs.to(self.device, non_blocking=True)
                     batch["targets"] = batch["targets"].to(self.device, non_blocking=True)
 
-                outputs = self.model(inputs, batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None)
+                # Explicitly pass asset_ids if available in the batch dictionary
+                asset_ids = batch.get("asset_id") if isinstance(batch, dict) and "asset_id" in batch else None
+                outputs = self.model(inputs, asset_ids)
                 loss_output = self.criterion(outputs, batch.get("targets") if not isinstance(outputs, dict) else batch)
                 
                 if isinstance(loss_output, dict):
