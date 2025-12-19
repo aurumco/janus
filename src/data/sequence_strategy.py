@@ -1,6 +1,6 @@
 """Sequence-based data processing strategy."""
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -14,14 +14,14 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
     def __init__(
         self,
         feature_columns: Optional[List[str]],
-        target_column: Optional[str],
+        target_column: Optional[Union[str, List[str]]],
         sequence_length: int,
     ) -> None:
         """Initialize sequence processing strategy.
 
         Args:
             feature_columns: List of feature column names.
-            target_column: Name of the target column.
+            target_column: Name of the target column(s).
             sequence_length: Length of each sequence window.
         """
         self.feature_columns = feature_columns
@@ -43,7 +43,10 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if self.feature_columns is not None:
             required.extend(self.feature_columns)
         if self.target_column is not None:
-            required.append(self.target_column)
+            if isinstance(self.target_column, list):
+                required.extend(self.target_column)
+            else:
+                required.append(self.target_column)
         return all(col in data.columns for col in required)
 
     def process(self, data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -54,22 +57,45 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
 
         Returns:
             Tuple of (X, y) where X has shape (n_samples, seq_len, n_features)
-            and y has shape (n_samples,).
+            and y has shape (n_samples,) or (n_samples, output_dim).
         """
         if not self.validate(data):
-            missing = set((self.feature_columns or []) + ([self.target_column] if self.target_column else [])) - set(data.columns)
+            # Helper to safely handle None/List for missing set calculation
+            cols = self.feature_columns or []
+            if self.target_column:
+                 cols.extend(self.target_column if isinstance(self.target_column, list) else [self.target_column])
+            missing = set(cols) - set(data.columns)
             raise ValueError(f"Missing required columns: {missing}")
 
         if self.feature_columns is None:
             cols = [c for c in data.columns if c not in ('asset_id', 'timestamp')]
             if self.target_column is not None:
-                cols = [c for c in cols if c != self.target_column]
+                if isinstance(self.target_column, list):
+                    cols = [c for c in cols if c not in self.target_column]
+                else:
+                    cols = [c for c in cols if c != self.target_column]
             feature_cols = cols
         else:
             feature_cols = [c for c in self.feature_columns if c not in ('asset_id', 'timestamp')]
 
         features = data[feature_cols].values
-        if self.target_column is None or self.target_column not in data.columns:
+
+        # APPEND ASSET ID IF AVAILABLE
+        # The FineTuneDataset assumes asset_id is the last column of X.
+        # So we must append it to features here.
+        if 'asset_id' in data.columns:
+            asset_ids = data['asset_id'].values.reshape(-1, 1)
+            features = np.hstack([features, asset_ids])
+
+        if self.target_column is None:
+            targets = np.zeros(len(data), dtype=np.float32)
+        elif isinstance(self.target_column, list):
+            # Check if all columns exist
+             if not all(col in data.columns for col in self.target_column):
+                 # This should be caught by validate but double check
+                 pass
+             targets = data[self.target_column].values
+        elif self.target_column not in data.columns:
             targets = np.zeros(len(data), dtype=np.float32)
         else:
             targets = data[self.target_column].values
@@ -105,8 +131,12 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         
         if self.feature_columns is None:
             cols = [c for c in schema_cols if c not in ('asset_id', 'timestamp')]
-            if self.target_column is not None and self.target_column in cols:
-                cols.remove(self.target_column)
+            if self.target_column is not None:
+                if isinstance(self.target_column, list):
+                    cols = [c for c in cols if c not in self.target_column]
+                else:
+                    if self.target_column in cols:
+                        cols.remove(self.target_column)
             feature_cols = cols
         else:
             feature_cols = [c for c in self.feature_columns if c in schema_cols and c not in ('asset_id', 'timestamp')]
@@ -207,9 +237,17 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             for i in range(n_samples):
                 X[i] = features[i:i + self.sequence_length]
 
+        # Extract targets corresponding to the last step of each window
         y = targets[self.sequence_length - 1: self.sequence_length - 1 + X.shape[0]]
+
+        # FIX: Only reshape/flatten if it's 1D, to preserve multi-output targets
         if y.ndim != 1:
+            # If targets has shape (N, D), keep it.
+            # Only reshape if it was somehow flattened but inconsistent
+            pass
+        else:
             y = y.reshape(-1)
+
         y = y.astype(np.float32, copy=False)
         if X.dtype != np.float32:
             X = X.astype(np.float32, copy=False)
@@ -224,40 +262,46 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         Returns:
             Tuple of (features, targets) where:
             - features has shape (n_timesteps, n_features)
-            - targets has shape (n_timesteps,)
+            - targets has shape (n_timesteps,) or (n_timesteps, output_dim)
         """
         if not self.validate(data):
-            missing = set((self.feature_columns or []) + ([self.target_column] if self.target_column else [])) - set(data.columns)
+            cols = self.feature_columns or []
+            if self.target_column:
+                 cols.extend(self.target_column if isinstance(self.target_column, list) else [self.target_column])
+            missing = set(cols) - set(data.columns)
             raise ValueError(f"Missing required columns: {missing}")
 
         if self.feature_columns is None:
             cols = [c for c in data.columns if c not in ('asset_id', 'timestamp')]
             if self.target_column is not None:
-                cols = [c for c in cols if c != self.target_column]
+                if isinstance(self.target_column, list):
+                    cols = [c for c in cols if c not in self.target_column]
+                else:
+                    if self.target_column in cols:
+                        cols = [c for c in cols if c != self.target_column]
             feature_cols = cols
         else:
             feature_cols = [c for c in self.feature_columns if c not in ('asset_id', 'timestamp')]
 
         features = data[feature_cols].values.astype(np.float32)
 
-        if self.target_column is None or self.target_column not in data.columns:
+        # APPEND ASSET ID IF AVAILABLE
+        # The LazyFineTuneDataset assumes asset_id is the last column of X.
+        if 'asset_id' in data.columns:
+            asset_ids = data['asset_id'].values.astype(np.float32).reshape(-1, 1)
+            features = np.hstack([features, asset_ids])
+
+        if self.target_column is None:
+             targets = np.zeros(len(data), dtype=np.float32)
+        elif isinstance(self.target_column, list):
+             targets = data[self.target_column].values.astype(np.float32)
+        elif self.target_column not in data.columns:
             targets = np.zeros(len(data), dtype=np.float32)
         else:
             targets = data[self.target_column].values.astype(np.float32)
 
-        # Handle asset_ids if present (for consistency, though LazyDataset currently doesn't use them)
         if 'asset_id' in data.columns:
-            # We don't return asset_ids in this signature yet, but we could stash them
             self._asset_ids_full = data['asset_id'].values
-
-            # For compatibility with existing _process_split which looks at _asset_ids_out:
-            # _asset_ids_out should match the sequences.
-            # Sequences are [0:L], [1:L+1]...
-            # Asset ID for sequence i is usually the ID of the asset (constant for the series)
-            # or the ID at the last timestep?
-            # Existing process() sets:
-            # self._asset_ids_out = asset_ids_raw[self.sequence_length - 1 : self.sequence_length - 1 + X.shape[0]]
-            # This implies asset_id is taken at the prediction point.
 
             if len(features) >= self.sequence_length:
                  start_idx = self.sequence_length - 1

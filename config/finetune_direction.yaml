@@ -1,0 +1,11 @@
+defaults:
+  - config.yaml # Inherit from main config
+
+finetune:
+  data:
+    path: "/kaggle/working/tasks/finetune_task1_direction.parquet"
+    target_column: "target_direction"
+  model:
+    output_dim: 1
+  loss:
+    type: "bce" # Use Binary Cross Entropy

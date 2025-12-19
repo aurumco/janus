@@ -1,0 +1,11 @@
+defaults:
+  - config.yaml # Inherit from main config
+
+finetune:
+  data:
+    path: "/kaggle/working/tasks/finetune_task3_price.parquet"
+    target_column: "target_log_return"
+  model:
+    output_dim: 1
+  loss:
+    type: "confidence_weighted"

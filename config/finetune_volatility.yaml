@@ -1,0 +1,13 @@
+defaults:
+  - config.yaml # Inherit from main config
+
+finetune:
+  data:
+    path: "/kaggle/working/tasks/finetune_task2_volatility.parquet"
+    target_column:
+      - "target_max_return_12"
+      - "target_min_return_12"
+  model:
+    output_dim: 2
+  loss:
+    type: "mse" # Multi-output MSE
