@@ -1,12 +1,89 @@
-defaults:
-  - config.yaml # Inherit from main config
+# Fully-contained Config for Direction Task
+seed: 47
 
 finetune:
   data:
     path: "/kaggle/working/tasks/finetune_task1_direction.parquet"
+    sequence_length: 96
+    batch_size: 256
+    num_features: 16
+    feature_columns:
+      - "RSI_14_M15"
+      - "ATR_5_pct_M15"
+      - "dist_from_ema_10_M15"
+      - "ema10_slope_M15"
+      - "volume_oscillator_M15"
+      - "obv_M15"
+      - "hour_sin"
+      - "hour_cos"
+      - "day_of_week_sin"
+      - "day_of_week_cos"
+      - "RSI_14_H1"
+      - "ADX_14_H1"
+      - "EMA_diff_21_H4pct"
+      - "RSI_15_x_NYHours"
+      - "garch_volatility"
+      - "asset_id"
     target_column: "target_direction"
+    train_ratio: 0.95
+    val_ratio: 0.05
+    test_ratio: 0.0
+    num_workers: 0
+    shuffle_train: false
+  
   model:
     name: "MambaClassifier"
+    d_model: 144
+    d_state: 18
+    d_conv: 4
+    n_layers: 6
+    dropout: 0.30
+    num_assets: 15
+    asset_embedding_dim: 32
     output_dim: 1
+  
+  training:
+    epochs: 50
+    learning_rate: 0.00005
+    weight_decay: 0.008
+    optimizer: "adamw"
+    scheduler: "reduce_on_plateau"
+    scheduler_patience: 10
+    scheduler_factor: 0.7
+    scheduler_min_lr: 0.00001
+    warmup_epochs: 0
+    gradient_clip: 1.5
+    accumulation_steps: 2
+    freeze_backbone_epochs: 3
+    head_lr_multiplier: 10.0
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.000001
+    save_best_only: true
+  
   loss:
-    type: "bce" # Use Binary Cross Entropy
+    type: "bce"
+
+# این بخش‌ها برای جلوگیری از ارور در train.py الزامیه
+paths:
+  output_dir: "/kaggle/working"
+  checkpoint_dir: "checkpoints"
+  results_dir: "results"
+  logs_dir: "logs"
+
+device:
+  use_cuda: true
+  device_id: 0
+  mixed_precision: true
+
+logging:
+  log_interval: 10
+  save_interval: 1
+  checkpoint_interval: 10
+  tensorboard: true
+  wandb: false
+
+evaluation:
+  metrics: ["mae", "rmse", "mse", "r2_score", "sign_accuracy"]
+  plot_predictions: true
+  plot_residuals: true
+  plot_training_curves: true
