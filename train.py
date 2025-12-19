@@ -290,30 +290,47 @@ def main() -> None:
                         logger.info(f"- {p}", indent=2)
                     logger.warning("Falling back to random initialization", indent=1)
         
-        try:
-            model = MambaRegressor(
+        model_name = config.get('model.name', 'MambaRegressor')
+
+        if 'Classifier' in model_name:
+            from src.models.mamba_classifier import MambaClassifier
+            logger.info(f"Initializing Classifier Model: {model_name}", indent=1)
+            model = MambaClassifier(
                 input_dim=config.get('data.num_features'),
                 d_model=config.get('model.d_model'),
                 d_state=config.get('model.d_state'),
                 d_conv=config.get('model.d_conv'),
                 n_layers=config.get('model.n_layers'),
-                output_dim=config.get('model.output_dim', 1),
+                num_classes=config.get('model.output_dim', 1),
                 dropout=config.get('model.dropout'),
-                pretrained_checkpoint_path=checkpoint_path,
+                num_assets=config.get('model.num_assets', 15),
+                asset_embedding_dim=config.get('model.asset_embedding_dim', 32),
             )
-        except Exception as e:
-            logger.error(f"Error loading checkpoint: {e}", indent=1)
-            logger.warning("Falling back to random initialization", indent=1)
-            model = MambaRegressor(
-                input_dim=config.get('data.num_features'),
-                d_model=config.get('model.d_model'),
-                d_state=config.get('model.d_state'),
-                d_conv=config.get('model.d_conv'),
-                n_layers=config.get('model.n_layers'),
-                output_dim=config.get('model.output_dim', 1),
-                dropout=config.get('model.dropout'),
-                pretrained_checkpoint_path=None,
-            )
+        else:
+            try:
+                model = MambaRegressor(
+                    input_dim=config.get('data.num_features'),
+                    d_model=config.get('model.d_model'),
+                    d_state=config.get('model.d_state'),
+                    d_conv=config.get('model.d_conv'),
+                    n_layers=config.get('model.n_layers'),
+                    output_dim=config.get('model.output_dim', 1),
+                    dropout=config.get('model.dropout'),
+                    pretrained_checkpoint_path=checkpoint_path,
+                )
+            except Exception as e:
+                logger.error(f"Error loading checkpoint: {e}", indent=1)
+                logger.warning("Falling back to random initialization", indent=1)
+                model = MambaRegressor(
+                    input_dim=config.get('data.num_features'),
+                    d_model=config.get('model.d_model'),
+                    d_state=config.get('model.d_state'),
+                    d_conv=config.get('model.d_conv'),
+                    n_layers=config.get('model.n_layers'),
+                    output_dim=config.get('model.output_dim', 1),
+                    dropout=config.get('model.dropout'),
+                    pretrained_checkpoint_path=None,
+                )
     
     logger.section("Model Initialization")
     
