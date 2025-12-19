@@ -1,6 +1,6 @@
 """PyTorch dataset for fine-tuning regression task."""
 
-from typing import Tuple
+from typing import Tuple, Dict, Union
 
 import numpy as np
 import torch
@@ -17,6 +17,8 @@ class FineTuneDataset(Dataset):
             X: Feature sequences of shape (n_samples, seq_len, n_features).
             y: Target values of shape (n_samples,) for regression.
         """
+        # Assume asset_id is the last column of features if present
+        # We'll split it during getitem
         self.X = torch.FloatTensor(X)
         self.y = torch.FloatTensor(y)
 
@@ -31,16 +33,29 @@ class FineTuneDataset(Dataset):
         """
         return len(self.X)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single sample.
 
         Args:
             idx: Sample index.
 
         Returns:
-            Tuple of (features, label).
+            Dictionary containing input_sequence, asset_id, and targets.
         """
-        return self.X[idx], self.y[idx]
+        x_full = self.X[idx]
+
+        # Separate features and asset_id
+        # x_core: (seq_len, n_features-1)
+        # asset_id: scalar (taken from first timestep, assumed constant)
+        x_core = x_full[:, :-1]
+        asset_id = x_full[0, -1].long()
+
+        return {
+            "input_sequence": x_core,
+            "asset_id": asset_id,
+            "targets": self.y[idx]
+        }
+
 
 class LazyFineTuneDataset(Dataset):
     """Memory-efficient dataset that slices windows on-the-fly.
@@ -79,14 +94,14 @@ class LazyFineTuneDataset(Dataset):
     def __len__(self) -> int:
         return self.n_samples
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single sample using on-the-fly slicing.
 
         Args:
             idx: Sample index.
 
         Returns:
-            Tuple of (features, label).
+            Dictionary containing input_sequence, asset_id, and targets.
         """
         if idx >= self.n_samples:
              raise IndexError(f"Index {idx} out of bounds for size {self.n_samples}")
@@ -94,10 +109,21 @@ class LazyFineTuneDataset(Dataset):
         # Slice features: (L, F)
         # Slicing a tensor returns a view, but creating the batch later copies it.
         # This is O(1) here.
-        x = self.features[idx : idx + self.sequence_length]
+        x_full = self.features[idx : idx + self.sequence_length]
+
+        # Separate features and asset_id
+        # x_core: (L, F-1)
+        x_core = x_full[:, :-1]
+
+        # asset_id: scalar (taken from first timestep of window)
+        asset_id = x_full[0, -1].long()
 
         # Get target corresponding to the end of the window
         # For window [t, t+L], target is at t+L-1
         y = self.targets[idx + self.sequence_length - 1]
 
-        return x, y
+        return {
+            "input_sequence": x_core,
+            "asset_id": asset_id,
+            "targets": y
+        }

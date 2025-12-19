@@ -1,7 +1,7 @@
 """Model evaluation module for regression metrics."""
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -46,10 +46,24 @@ class ModelEvaluator:
         all_targets = []
 
         with torch.no_grad():
-            for inputs, targets in tqdm(data_loader, desc="Evaluating"):
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+            for batch_data in tqdm(data_loader, desc="Evaluating"):
+                # Handle dictionary (new format) or tuple (old format)
+                if isinstance(batch_data, dict):
+                    inputs = batch_data["input_sequence"]
+                    targets = batch_data["targets"]
+                    asset_ids = batch_data.get("asset_id")
+                else:
+                    inputs, targets = batch_data
+                    asset_ids = None
 
-                outputs = self.model(inputs)
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+
+                if asset_ids is not None:
+                    asset_ids = asset_ids.to(self.device)
+                    outputs = self.model(inputs, asset_ids=asset_ids)
+                else:
+                    outputs = self.model(inputs)
 
                 all_predictions.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())

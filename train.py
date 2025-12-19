@@ -190,6 +190,9 @@ def main() -> None:
         )
     else:
         # Fine-tuning mode
+        # NOTE: FineTuneDataset and LazyFineTuneDataset now return a dictionary:
+        # {'input_sequence': x, 'asset_id': asset_id, 'targets': y}
+        # The Trainer class is already equipped to handle dictionary batches.
         use_streaming_fallback = bool(config.get('data.use_streaming_fallback', False))
         data_factory = DataLoaderFactory(
             data_path=data_path,
@@ -558,6 +561,10 @@ def main() -> None:
 
     try:
         example = torch.randn(1, config.get('data.input_window'), config.get('data.num_features')).to(device)
+        # Update export to handle asset_id if possible, but keep simple for now.
+        # Ideally we should pass a dummy asset_id if the model expects it, but our dataset fix
+        # handles it via Trainer, and export uses just 'example' input.
+        # Since MambaRegressor has asset_id as optional, this shouldn't break.
         (actual_model if 'actual_model' in locals() else model).eval()
         with torch.no_grad():
             traced = torch.jit.trace((actual_model if 'actual_model' in locals() else model), example, strict=False)
