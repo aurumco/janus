@@ -174,7 +174,10 @@ class PretrainDataset(Dataset):
         Returns:
             Dictionary containing masked sequence, mask, targets, and asset_id.
         """
-        original_sequence = self.X[idx].clone()
+        # Optimize: Avoid initial clone since we need a clean original for return.
+        # Slicing returns a view, which is safe to read from.
+        # The DataLoader will copy it when batching anyway.
+        original_sequence = self.X[idx]
         asset_id = self.asset_ids[idx]
         
         if self.masking_ratio > 0.0:
@@ -183,6 +186,10 @@ class PretrainDataset(Dataset):
             masked_sequence[mask_binary] = 0.0
         else:
             mask_binary = torch.zeros(self.seq_len, dtype=torch.bool)
+            # If no masking, we must clone if we want to ensure the returned tensor
+            # is not a view into the large self.X (though usually fine for read-only).
+            # But consistent behavior suggests we should likely return a copy or view.
+            # Here we return the view as original_sequence, and masked_sequence is same.
             masked_sequence = original_sequence
         
         # Use precomputed volatility
@@ -285,7 +292,7 @@ class PretrainDataset(Dataset):
                 positions = np.random.choice(
                     self.sequence_length, size=num_positions, replace=False
                 )
-                for pos in positions:
-                    mask_binary[pos] = True
+                # Optimize: Vectorized assignment
+                mask_binary[positions] = True
         
         return mask_binary
