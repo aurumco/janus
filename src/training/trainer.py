@@ -289,6 +289,15 @@ class Trainer:
                     else:
                         loss = loss_output
                 
+                # Check for finite loss BEFORE backward
+                if not torch.isfinite(loss):
+                    loss_value = loss.item()
+                    print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
+                    print(f"  Loss value: {loss_value}")
+                    print(f"  Skipping this batch and clearing gradients...")
+                    self.optimizer.zero_grad()
+                    continue
+
                 # Keep original unscaled loss for metrics
                 # Since loss is about to be divided by accumulation_steps for backward
                 metrics_loss = loss.detach()
@@ -324,7 +333,18 @@ class Trainer:
                 else:
                     loss = loss_output
 
-                # FIX: Added missing backward/step for non-AMP training
+                # Check for finite loss BEFORE backward
+                if not torch.isfinite(loss):
+                    loss_value = loss.item()
+                    print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
+                    print(f"  Loss value: {loss_value}")
+                    print(f"  Skipping this batch and clearing gradients...")
+                    self.optimizer.zero_grad()
+                    continue
+
+                # Keep original unscaled loss for metrics
+                metrics_loss = loss.detach()
+
                 loss = loss / self.accumulation_steps
                 loss.backward()
 
@@ -336,26 +356,13 @@ class Trainer:
                         )
                     self.optimizer.step()
                     self.optimizer.zero_grad()
-
-            # Check for finite loss
-            if not torch.isfinite(loss):
-                loss_value = loss.item()
-                print(f"\nWARNING: Non-finite loss detected at batch {batch_idx}")
-                print(f"  Loss value: {loss_value}")
-                print(f"  Skipping this batch...")
-                continue
             
             # Accumulate total loss as tensor to avoid per-batch sync
             if isinstance(total_loss, float):
                  total_loss = torch.tensor(0.0, device=self.device)
 
-            # Correctly accumulate loss. In AMP block, we captured metrics_loss before division.
-            # In Non-AMP block, loss was divided by accumulation_steps.
-            if self.use_amp:
-                 total_loss += metrics_loss
-            else:
-                 # In non-AMP path, loss was divided by accumulation_steps, so we multiply back
-                 total_loss += loss.detach() * self.accumulation_steps
+            # Correctly accumulate loss.
+            total_loss += metrics_loss
             
         num_batches = len(train_loader)
 
