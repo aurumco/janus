@@ -110,14 +110,14 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         
         return X, y
 
-    def process_gpu(self, parquet_path: str) -> Tuple[str, str, int, int]:
+    def process_gpu(self, parquet_path: str) -> Tuple[str, Optional[str], str, int, int, int]:
         """GPU-accelerated chunked processing writing base features memmap.
 
         Args:
             parquet_path: Path to parquet file to read in chunks.
 
         Returns:
-            Tuple (features_path, asset_ids_path, n_timesteps, n_features) for streaming dataset.
+            Tuple (features_path, targets_path, asset_ids_path, n_timesteps, n_features, n_targets) for streaming dataset.
         """
         import cupy as cp
         import cudf
@@ -128,7 +128,8 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         parquet_file = pq.ParquetFile(parquet_path)
         total_rows = parquet_file.metadata.num_rows
         schema_cols = [parquet_file.schema[i].name for i in range(len(parquet_file.schema))]
-        
+
+        # --- Resolve Feature Columns ---
         if self.feature_columns is None:
             cols = [c for c in schema_cols if c not in ('asset_id', 'timestamp')]
             if self.target_column is not None:
@@ -144,6 +145,17 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if len(feature_cols) == 0:
             raise ValueError("No valid feature columns available on GPU path")
 
+        # --- Resolve Target Columns ---
+        target_cols = []
+        if self.target_column is not None:
+            if isinstance(self.target_column, list):
+                target_cols = [c for c in self.target_column if c in schema_cols]
+            elif self.target_column in schema_cols:
+                target_cols = [self.target_column]
+
+        n_targets = len(target_cols)
+        has_targets = n_targets > 0
+
         n_timesteps = total_rows
         n_features = len(feature_cols)
         if n_timesteps < self.sequence_length:
@@ -154,9 +166,19 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         tmpdir = "/kaggle/working" if os.path.exists("/kaggle/working") else tempfile.gettempdir()
         features_path = os.path.join(tmpdir, f"features_{os.getpid()}.dat")
         asset_ids_path = os.path.join(tmpdir, f"asset_ids_{os.getpid()}.dat")
+        targets_path = os.path.join(tmpdir, f"targets_{os.getpid()}.dat") if has_targets else None
         
         features_mmap = np.memmap(features_path, dtype=np.float32, mode='w+', shape=(n_timesteps, n_features))
         asset_ids_mmap = np.memmap(asset_ids_path, dtype=np.int64, mode='w+', shape=(n_timesteps,))
+
+        targets_mmap = None
+        if has_targets and targets_path:
+             # If n_targets > 1, shape is (N, D), else (N,)
+             # To be consistent with LazyFineTuneDataset which expects (N,) or (N,D)
+             # But memmap is flat usually. We'll use (N, D) if D > 1 or (N,) if D=1?
+             # Actually, if D=1, shape=(N,) is easier.
+             t_shape = (n_timesteps, n_targets) if n_targets > 1 else (n_timesteps,)
+             targets_mmap = np.memmap(targets_path, dtype=np.float32, mode='w+', shape=t_shape)
 
         read_chunk_size = 500000
         print(f"  GPU chunked read: {n_timesteps} rows, chunk={read_chunk_size}")
@@ -172,12 +194,15 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         for batch in parquet_file.iter_batches(batch_size=read_chunk_size):
             chunk_pd = batch.to_pandas()
             import numpy as _np
+
+            # --- Process Features ---
             numeric_cols = [c for c in chunk_pd.columns if _np.issubdtype(chunk_pd[c].dtype, _np.number)]
             present_cols = [c for c in feature_cols if c in numeric_cols]
             missing_cols = [c for c in feature_cols if c not in present_cols]
             for mc in missing_cols:
                 chunk_pd[mc] = 0.0
             feat_pd = chunk_pd[feature_cols]
+
             chunk = cudf.from_pandas(feat_pd)
             gfeat = chunk.to_cupy().astype(cp.float32)
             feat_cpu = cp.asnumpy(gfeat)
@@ -187,6 +212,27 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             actual = end_write - written
             features_mmap[written:end_write] = feat_cpu[:actual]
             
+            # --- Process Targets ---
+            if has_targets and targets_mmap is not None:
+                # Fill missing targets with 0.0 if not present (shouldn't happen if validated, but safe)
+                present_t_cols = [c for c in target_cols if c in chunk_pd.columns]
+                for tc in target_cols:
+                    if tc not in present_t_cols:
+                        chunk_pd[tc] = 0.0
+
+                t_pd = chunk_pd[target_cols]
+                t_chunk = cudf.from_pandas(t_pd)
+                gtarg = t_chunk.to_cupy().astype(cp.float32)
+                targ_cpu = cp.asnumpy(gtarg)
+
+                # Squeeze if needed for 1D
+                if n_targets == 1:
+                    targ_cpu = targ_cpu.flatten()
+
+                targets_mmap[written:end_write] = targ_cpu[:actual]
+                del t_chunk, gtarg, targ_cpu
+
+            # --- Process Asset IDs ---
             if 'asset_id' in chunk_pd.columns:
                 aids = chunk_pd['asset_id'].values.astype(np.int64)
             else:
@@ -197,19 +243,22 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             if pbar:
                 pbar.update(actual)
             
+            # Clean up GPU memory
             del gfeat, feat_cpu, chunk, chunk_pd, aids
             cp.get_default_memory_pool().free_all_blocks()
-            import gc
-            gc.collect()
+            # Removed explicit gc.collect() to improve performance as per Titan's Journal
         
         if pbar:
             pbar.close()
         
         features_mmap.flush()
         asset_ids_mmap.flush()
+        if targets_mmap is not None:
+            targets_mmap.flush()
+            del targets_mmap
         del features_mmap, asset_ids_mmap
         
-        return features_path, asset_ids_path, written, n_features
+        return features_path, targets_path, asset_ids_path, written, n_features, n_targets
 
     def _create_sequences(
         self,

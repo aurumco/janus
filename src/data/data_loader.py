@@ -6,6 +6,7 @@ import gc
 import time
 import numpy as np
 
+import torch
 import pandas as pd
 from torch.utils.data import DataLoader, Subset, Dataset
 
@@ -32,6 +33,41 @@ from .memory_efficient_dataset import (
     MemoryEfficientPretrainDataset,
     MemoryEfficientFinetuneDataset,
 )
+
+
+class MemmapLazyFineTuneDataset(Dataset):
+    """Memory-mapped dataset for lazy fine-tuning with separate asset IDs."""
+
+    def __init__(self, features, targets, asset_ids, sequence_length):
+        self.features = features
+        self.targets = targets
+        self.asset_ids = asset_ids
+        self.sequence_length = sequence_length
+        self.n_samples = max(0, len(self.features) - sequence_length + 1)
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        if idx >= self.n_samples:
+            raise IndexError()
+
+        # features is (N, F). LazyFineTuneDataset expects (N, F+1).
+        # Here we have features (N, F) and asset_ids (N,).
+
+        x_core = torch.as_tensor(self.features[idx : idx + self.sequence_length])
+
+        # Asset ID: take from first step
+        aid = self.asset_ids[idx]
+
+        # Target: last step
+        y = torch.as_tensor(self.targets[idx + self.sequence_length - 1])
+
+        return {
+            "input_sequence": x_core,
+            "asset_id": torch.tensor(aid, dtype=torch.long),
+            "targets": y
+        }
 
 
 class DataLoaderFactory:
@@ -91,12 +127,7 @@ class DataLoaderFactory:
         self.sequence_length = sequence_length
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
-        # Force CPU preprocessing for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
-        if mode == 'finetune':
-            self.use_gpu_preprocess = False
-        else:
-            self.use_gpu_preprocess = use_gpu_preprocess
+        self.use_gpu_preprocess = use_gpu_preprocess
 
         self.use_streaming_fallback = use_streaming_fallback
         self.verbose = verbose
@@ -202,6 +233,7 @@ class DataLoaderFactory:
 
         result = {
             "features_path": None,
+            "targets_path": None,
             "asset_ids_path": None,
             "n_timesteps": None,
             "n_features": None,
@@ -210,17 +242,15 @@ class DataLoaderFactory:
             "data_splits": None
         }
 
-        # Force CPU split for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
-        force_cpu = (self.mode == 'finetune')
-
-        if gdata is not None and self.use_gpu_preprocess and not force_cpu:
-            features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
+        if gdata is not None and self.use_gpu_preprocess:
+            features_path, targets_path, asset_ids_path, n_timesteps, n_features, n_targets = self.processing_strategy.process_gpu(gdata)
             result.update({
                 "features_path": features_path,
+                "targets_path": targets_path,
                 "asset_ids_path": asset_ids_path,
                 "n_timesteps": n_timesteps,
-                "n_features": n_features
+                "n_features": n_features,
+                "n_targets": n_targets
             })
             if self.verbose and logger:
                 logger.info(f"Features: {n_timesteps} × {n_features}", indent=2)
@@ -368,6 +398,10 @@ class DataLoaderFactory:
         else:
             if self.use_streaming_fallback:
                 train_dataset, val_dataset, test_dataset = self._create_streaming_finetune_datasets()
+            elif processed_data["features_path"] is not None:
+                train_dataset, val_dataset, test_dataset = self._create_memmap_finetune_datasets(
+                    processed_data, train_end, val_end, n_samples
+                )
             else:
                 train_dataset, val_dataset, test_dataset = self._create_memory_finetune_datasets(
                     processed_data["data_splits"]
@@ -468,6 +502,46 @@ class DataLoaderFactory:
             create_ds(splits["train"]),
             create_ds(splits["val"]),
             create_ds(splits["test"])
+        )
+
+    def _create_memmap_finetune_datasets(
+        self,
+        processed_data: Dict[str, Any],
+        train_end: int,
+        val_end: int,
+        n_samples: int
+    ) -> Tuple[Dataset, Dataset, Dataset]:
+        """Create fine-tune datasets from memory mapped files."""
+        features_path = processed_data["features_path"]
+        targets_path = processed_data["targets_path"]
+        asset_ids_path = processed_data["asset_ids_path"] # Currently unused by LazyFineTuneDataset but good to have
+        n_timesteps = processed_data["n_timesteps"]
+        n_features = processed_data["n_features"]
+        n_targets = processed_data.get("n_targets", 1)
+
+        if not targets_path:
+             raise ValueError("Targets path missing for finetune mode with GPU processing")
+
+        # Load Memmaps
+        target_shape = (n_timesteps, n_targets) if n_targets > 1 else (n_timesteps,)
+
+        features_mmap = np.memmap(features_path, dtype=np.float32, mode='r', shape=(n_timesteps, n_features))
+        targets_mmap = np.memmap(targets_path, dtype=np.float32, mode='r', shape=target_shape)
+        asset_ids_mmap = np.memmap(asset_ids_path, dtype=np.int64, mode='r', shape=(n_timesteps,))
+
+        def create_ds(start, end):
+             if start >= end: return None
+             # Slicing memmaps returns new memmaps (views).
+             f_sub = features_mmap[start:end]
+             t_sub = targets_mmap[start:end]
+             a_sub = asset_ids_mmap[start:end]
+
+             return MemmapLazyFineTuneDataset(f_sub, t_sub, a_sub, self.sequence_length)
+
+        return (
+            create_ds(0, train_end),
+            create_ds(train_end, val_end),
+            create_ds(val_end, n_samples)
         )
 
     def _create_streaming_finetune_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
