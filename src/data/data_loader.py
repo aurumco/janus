@@ -394,10 +394,14 @@ class DataLoaderFactory:
         train_end = int(n_samples * self.train_ratio)
         val_end = int(n_samples * (self.train_ratio + self.val_ratio))
 
+        # Add gap equal to sequence_length to prevent leakage
+        val_start = min(train_end + self.sequence_length, val_end)
+        test_start = min(val_end + self.sequence_length, n_samples)
+
         return (
             Subset(full_dataset, range(0, train_end)),
-            Subset(full_dataset, range(train_end, val_end)),
-            Subset(full_dataset, range(val_end, n_samples))
+            Subset(full_dataset, range(val_start, val_end)),
+            Subset(full_dataset, range(test_start, n_samples))
         )
 
     def _create_memmap_pretrain_datasets(
@@ -430,19 +434,23 @@ class DataLoaderFactory:
             "stride": self.stride,
         }
 
+        # Add gap equal to sequence_length to prevent leakage
+        val_start = min(train_end + self.sequence_length, val_end)
+        test_start = min(val_end + self.sequence_length, n_samples)
+
         train_ds = PretrainWindowDataset(
             start_index=0,
             end_index=train_end,
             **common_args
         )
         val_ds = PretrainWindowDataset(
-            start_index=train_end,
+            start_index=val_start,
             end_index=val_end,
             deterministic=True,
             **common_args
         )
         test_ds = PretrainWindowDataset(
-            start_index=val_end,
+            start_index=test_start,
             end_index=n_samples,
             deterministic=True,
             **common_args
@@ -483,10 +491,14 @@ class DataLoaderFactory:
         train_end = int(n_samples * self.train_ratio)
         val_end = int(n_samples * (self.train_ratio + self.val_ratio))
 
+        # Add gap equal to sequence_length to prevent leakage
+        val_start = min(train_end + self.sequence_length, val_end)
+        test_start = min(val_end + self.sequence_length, n_samples)
+
         return (
             Subset(full_dataset, range(0, train_end)),
-            Subset(full_dataset, range(train_end, val_end)),
-            Subset(full_dataset, range(val_end, n_samples))
+            Subset(full_dataset, range(val_start, val_end)),
+            Subset(full_dataset, range(test_start, n_samples))
         )
 
     def _create_memory_finetune_datasets(self, splits: Dict[str, Any]) -> Tuple[Dataset, Dataset, Dataset]:
