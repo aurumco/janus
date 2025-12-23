@@ -214,8 +214,9 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use torch.rand instead of np.random to avoid CPU sync
+        use_smart_masking = torch.rand(1).item() < self.smart_masking_prob
+        use_cross_asset = torch.rand(1).item() < self.cross_asset_masking_prob
         
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
@@ -231,16 +232,20 @@ class PretrainDataset(Dataset):
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            # No need to convert to numpy or use nonzero if we use randperm on full length
+            # But finding unmasked is fast.
+
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
             if len(unmasked_indices) > 0:
                 # Limit needed to available unmasked spots
                 needed = min(needed, len(unmasked_indices))
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
-                mask_binary[new_mask_indices] = True
+                # Use torch.randperm instead of np.random.choice
+                perm = torch.randperm(len(unmasked_indices))
+                selected_indices = unmasked_indices[perm[:needed]]
+
+                mask_binary[selected_indices] = True
         
         return mask_binary
     
@@ -264,9 +269,11 @@ class PretrainDataset(Dataset):
         high_vol_threshold = torch.quantile(price_volatility, 0.8)
         high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
         
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+        n_high = len(high_vol_indices)
+        if n_high > 0:
+            # Use torch.randint instead of np.random.randint
+            mask_idx = high_vol_indices[torch.randint(0, n_high, (1,)).item()]
+            mask_length = torch.randint(1, 4, (1,)).item()
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -287,11 +294,13 @@ class PretrainDataset(Dataset):
         # Use configurable price feature indices
         
         for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
+            # Use torch.rand instead of np.random.random
+            if torch.rand(1).item() < 0.15:
                 num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
+
+                # Use torch.randperm instead of np.random.choice
+                positions = torch.randperm(self.sequence_length)[:num_positions]
+
                 # Optimize: Vectorized assignment
                 mask_binary[positions] = True
         
