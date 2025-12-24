@@ -454,9 +454,19 @@ class DataLoaderFactory:
         def create_ds(split_data):
             if split_data["X"] is None:
                 return None
+
+            # Apply stride to save memory and match config
+            X = split_data["X"]
+            asset_ids = split_data["asset_ids"]
+
+            if self.stride > 1:
+                X = X[::self.stride]
+                if asset_ids is not None:
+                    asset_ids = asset_ids[::self.stride]
+
             return PretrainDataset(
-                split_data["X"],
-                asset_ids=split_data["asset_ids"],
+                X,
+                asset_ids=asset_ids,
                 sequence_length=self.sequence_length,
                 masking_ratio=self.masking_ratio,
                 volatility_lookahead=self.volatility_lookahead,

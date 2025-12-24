@@ -223,19 +223,14 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
                 f"Not enough data points. Need at least {self.sequence_length}, got {n_timesteps}"
             )
 
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            X_view = sliding_window_view(features, window_shape=(self.sequence_length, features.shape[1]))
-            if X_view.ndim == 4:
-                X = X_view[:, 0, :, :]
-            else:
-                X = sliding_window_view(features, window_shape=self.sequence_length)
-                X = X.reshape(-1, self.sequence_length, features.shape[1])
-        except Exception:
-            n_samples = n_timesteps - self.sequence_length + 1
-            X = np.zeros((n_samples, self.sequence_length, features.shape[1]), dtype=np.float32)
-            for i in range(n_samples):
-                X[i] = features[i:i + self.sequence_length]
+        from numpy.lib.stride_tricks import sliding_window_view
+        # Slide window along the time axis (axis 0).
+        # features shape: (T, F)
+        # X_view shape: (T - L + 1, F, L)
+        X_view = sliding_window_view(features, window_shape=self.sequence_length, axis=0)
+
+        # Transpose to get (T - L + 1, L, F)
+        X = X_view.transpose(0, 2, 1)
 
         # Extract targets corresponding to the last step of each window
         y = targets[self.sequence_length - 1: self.sequence_length - 1 + X.shape[0]]
