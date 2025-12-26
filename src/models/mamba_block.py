@@ -3,6 +3,8 @@
 import torch
 import torch.nn as nn
 
+from .normalization import RMSNorm
+
 try:
     from mamba_ssm import Mamba
     MAMBA_AVAILABLE = True
@@ -52,7 +54,7 @@ class MambaBlock(nn.Module):
             )
             raise ImportError(hint)
 
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = RMSNorm(d_model)
         self.mamba = Mamba(
             d_model=d_model,
             d_state=d_state,
