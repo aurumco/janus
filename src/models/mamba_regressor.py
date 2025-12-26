@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from .mamba_block import MambaBlock
+from .normalization import RMSNorm
 
 
 class MambaRegressor(nn.Module):
@@ -58,7 +59,7 @@ class MambaRegressor(nn.Module):
             self.asset_projection = None
 
         self.input_projection = nn.Linear(input_dim, d_model)
-        self.input_norm = nn.LayerNorm(d_model)
+        self.input_norm = RMSNorm(d_model)
 
         self.mamba_layers = nn.ModuleList([
             MambaBlock(

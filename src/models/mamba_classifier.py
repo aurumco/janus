@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from .mamba_block import MambaBlock
+from .normalization import RMSNorm
 
 
 class MambaClassifier(nn.Module):
@@ -55,7 +56,7 @@ class MambaClassifier(nn.Module):
             self.asset_projection = None
 
         self.input_projection = nn.Linear(input_dim, d_model)
-        self.input_norm = nn.LayerNorm(d_model)
+        self.input_norm = RMSNorm(d_model)
 
         self.mamba_layers = nn.ModuleList([
             MambaBlock(
@@ -68,7 +69,7 @@ class MambaClassifier(nn.Module):
         ])
 
         self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(d_model) for _ in range(n_layers)
+            RMSNorm(d_model) for _ in range(n_layers)
         ])
 
         self.classifier_head = nn.Sequential(
