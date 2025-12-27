@@ -1,5 +1,6 @@
 """PyTorch dataset for SSL pre-training with masking."""
 
+import random
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -69,59 +70,18 @@ class PretrainDataset(Dataset):
             target_idx = 0 # Fallback if invalid
 
         # Vectorized calculation using unfold
-        # We need to compute std(diff(future_prices)) for each idx.
-        # future_prices for idx comes from X[idx+1 : idx+1+lookahead]
-        # X shape: (N, L, F)
-        # We extract the relevant feature: prices = X[:, :, target_idx] -> (N, L)
-
         prices = self.X[:, :, target_idx]
 
         # We process in chunks to avoid OOM
         chunk_size = 10000
         lookahead = self.volatility_lookahead
-
-        # We need X[idx+1...idx+lookahead].
-        # The last sample is at n_samples - 1.
-        # So valid idx goes up to n_samples - lookahead - 1.
-        # Actually __len__ is n_samples - lookahead.
-        # The loop range was range(self.n_samples).
-        # Inside loop: future_end_idx = min(idx + 1 + lookahead, n_samples)
-        # If idx is near end, the window is smaller.
-
-        # Vectorized approach is easier if we ignore the tail edge cases or handle them separately.
-        # However, to be robust and match the logic:
-
-        # Let's handle the main block where we have full lookahead.
         valid_n = max(0, self.n_samples - lookahead - 1)
 
         if valid_n > 0:
-            # We take prices starting from index 1 (since loop uses idx+1)
-            # prices_shifted = prices[1:]
-
-            # We unfold dimension 0 with size=lookahead, step=1
-            # prices_unfolded shape: (N_unfolded, L, lookahead)
-            # N_unfolded = (N-1) - lookahead + 1 = N - lookahead.
-            # This covers idx 0 to N-lookahead-1.
-
-            # Since unfolding creates a view, it's cheap. But operations on it are expensive.
-            # We chunk the operations.
-
             prices_source = prices[1:] # Shift by 1
 
             for start_i in range(0, valid_n, chunk_size):
                 end_i = min(start_i + chunk_size, valid_n)
-
-                # Unfold creates a window view.
-                # We need a window of size 'lookahead' starting at each position.
-                # slice source: prices_source[start_i : end_i + lookahead - 1]
-                # length needed: (end_i - start_i) + lookahead - 1?
-                # No. Unfold on T elements gives T - size + 1 windows.
-                # We want (end_i - start_i) windows.
-                # So we need input of length (end_i - start_i) + lookahead - 1.
-
-                # Correction: to get N windows, we need input size N + size - 1.
-                # Here N = (end_i - start_i). size = lookahead.
-                # So we need slice length = (end_i - start_i) + lookahead - 1.
 
                 sub_slice = prices_source[start_i : end_i + lookahead - 1]
                 if sub_slice.size(0) < lookahead:
@@ -129,25 +89,15 @@ class PretrainDataset(Dataset):
 
                 # unfold(dim, size, step)
                 windows = sub_slice.unfold(0, lookahead, 1) # (B, L, lookahead)
-
-                # We want diff along the window dimension (dim 2)
-                # windows: (B, L, lookahead)
-                # diffs: windows[..., 1:] - windows[..., :-1]
                 diffs = windows[:, :, 1:] - windows[:, :, :-1] # (B, L, lookahead-1)
 
-                # Std over last two dims (L * (lookahead-1))
-                # torch.std doesn't support multiple dims until recently?
-                # Actually it does. But to be safe and efficient:
-                # flatten the last two dims
+                # Flatten last two dims for std calculation
                 diffs_flat = diffs.reshape(diffs.size(0), -1)
-
-                # Calculate std
                 stds = torch.std(diffs_flat, dim=1) + 1e-6
 
                 self.volatility_targets[start_i:end_i] = stds
 
-        # Handle the tail (where we don't have full lookahead)
-        # This matches the "if len(future_prices) > 5" logic in the loop
+        # Handle the tail
         tail_start = valid_n
         for idx in range(tail_start, self.n_samples):
             future_end_idx = min(idx + 1 + lookahead, self.n_samples)
@@ -175,8 +125,6 @@ class PretrainDataset(Dataset):
             Dictionary containing masked sequence, mask, targets, and asset_id.
         """
         # Optimize: Avoid initial clone since we need a clean original for return.
-        # Slicing returns a view, which is safe to read from.
-        # The DataLoader will copy it when batching anyway.
         original_sequence = self.X[idx]
         asset_id = self.asset_ids[idx]
         
@@ -186,10 +134,6 @@ class PretrainDataset(Dataset):
             masked_sequence[mask_binary] = 0.0
         else:
             mask_binary = torch.zeros(self.seq_len, dtype=torch.bool)
-            # If no masking, we must clone if we want to ensure the returned tensor
-            # is not a view into the large self.X (though usually fine for read-only).
-            # But consistent behavior suggests we should likely return a copy or view.
-            # Here we return the view as original_sequence, and masked_sequence is same.
             masked_sequence = original_sequence
         
         # Use precomputed volatility
@@ -214,8 +158,9 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use standard random for scalar probabilities (faster than torch.rand(1).item())
+        use_smart_masking = random.random() < self.smart_masking_prob
+        use_cross_asset = random.random() < self.cross_asset_masking_prob
         
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
@@ -230,16 +175,18 @@ class PretrainDataset(Dataset):
         if current_masked_count < target_masked_count:
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
-            # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
 
-            if len(unmasked_indices) > 0:
-                # Limit needed to available unmasked spots
-                needed = min(needed, len(unmasked_indices))
+            # Optimized: Get indices directly on torch tensor
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
+            n_unmasked = unmasked_indices.size(0)
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
+            if n_unmasked > 0:
+                needed = min(needed, n_unmasked)
+
+                # Optimized: Use torch.randperm for sampling without replacement
+                # This stays on the same device/memory type as indices
+                perm = torch.randperm(n_unmasked)[:needed]
+                new_mask_indices = unmasked_indices[perm]
                 mask_binary[new_mask_indices] = True
         
         return mask_binary
@@ -259,14 +206,20 @@ class PretrainDataset(Dataset):
         # Use configurable price feature indices instead of hardcoded slice
         price_features = sequence[:, self.price_feature_indices]
         
+        # torch.std along dim 1
         price_volatility = torch.std(price_features, dim=1)
         
+        # quantile is somewhat expensive, but needed for logic
         high_vol_threshold = torch.quantile(price_volatility, 0.8)
         high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
+        n_high_vol = high_vol_indices.size(0)
         
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+        if n_high_vol > 0:
+            # Optimized: Use random.randint for scalar indices
+            rand_idx = random.randint(0, n_high_vol - 1)
+            mask_idx = high_vol_indices[rand_idx].item()
+            mask_length = random.randint(1, 3) # randint is inclusive for python random
+
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -286,13 +239,13 @@ class PretrainDataset(Dataset):
         """
         # Use configurable price feature indices
         
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
+        for _ in self.price_feature_indices:
+            if random.random() < 0.15:
                 num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
+
+                # Optimized: Use torch.randperm
+                positions = torch.randperm(self.sequence_length)[:num_positions]
+
                 mask_binary[positions] = True
         
         return mask_binary

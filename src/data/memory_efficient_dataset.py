@@ -5,7 +5,8 @@ dataset into RAM, instead reading only the required windows on demand.
 """
 
 import gc
-from typing import Dict, List, Optional
+import random
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -178,22 +179,27 @@ class MemoryEfficientPretrainDataset(ParquetStreamingDataset):
         seq_len = sequence.size(0)
         mask_binary = torch.zeros(seq_len, dtype=torch.bool)
 
-        use_smart = np.random.random() < self.smart_masking_prob
+        use_smart = random.random() < self.smart_masking_prob
 
         if use_smart and sequence.size(1) >= 4:
             price_features = sequence[:, :4]
             price_volatility = torch.std(price_features, dim=1)
             high_vol_threshold = torch.quantile(price_volatility, 0.8)
-            high_vol_idx = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
 
-            if len(high_vol_idx) > 0:
-                m = high_vol_idx[np.random.randint(len(high_vol_idx))]
-                length = np.random.randint(1, 4)
+            # Optimized: avoid numpy conversion
+            high_vol_idx = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
+            n_high_vol = high_vol_idx.size(0)
+
+            if n_high_vol > 0:
+                # Optimized: random.randint instead of np.random
+                m = high_vol_idx[random.randint(0, n_high_vol - 1)].item()
+                length = random.randint(1, 3) # inclusive
                 end_idx = min(m + length, seq_len)
                 mask_binary[m:end_idx] = True
         else:
             num_mask = max(1, int(seq_len * self.masking_ratio))
-            mask_idx = np.random.choice(seq_len, size=num_mask, replace=False)
+            # Optimized: torch.randperm instead of np.random.choice
+            mask_idx = torch.randperm(seq_len)[:num_mask]
             mask_binary[mask_idx] = True
 
         return mask_binary
