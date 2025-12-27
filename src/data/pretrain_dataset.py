@@ -214,8 +214,9 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use torch.rand for probabilities (returns tensor, take item())
+        use_smart_masking = torch.rand(1).item() < self.smart_masking_prob
+        use_cross_asset = torch.rand(1).item() < self.cross_asset_masking_prob
         
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
@@ -231,15 +232,17 @@ class PretrainDataset(Dataset):
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
             if len(unmasked_indices) > 0:
                 # Limit needed to available unmasked spots
                 needed = min(needed, len(unmasked_indices))
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
+                # Use torch.randperm to select random indices
+                # It's faster to permute and take top k than random choice without replacement for small sets
+                perm = torch.randperm(len(unmasked_indices))[:needed]
+                new_mask_indices = unmasked_indices[perm]
+
                 mask_binary[new_mask_indices] = True
         
         return mask_binary
@@ -261,12 +264,18 @@ class PretrainDataset(Dataset):
         
         price_volatility = torch.std(price_features, dim=1)
         
+        # Optimize: torch.quantile can be slow. Use kthvalue or topk if quantile is fixed.
+        # But for now, keeping quantile for correctness logic.
         high_vol_threshold = torch.quantile(price_volatility, 0.8)
         high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
         
         if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+            # Pick one random index from high_vol_indices
+            rand_idx = torch.randint(0, len(high_vol_indices), (1,)).item()
+            mask_idx = high_vol_indices[rand_idx]
+
+            # Random length 1 to 3
+            mask_length = torch.randint(1, 4, (1,)).item()
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -286,13 +295,21 @@ class PretrainDataset(Dataset):
         """
         # Use configurable price feature indices
         
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
-                num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
-                mask_binary[positions] = True
+        # Vectorized probability check
+        num_features = len(self.price_feature_indices)
+        if num_features == 0:
+            return mask_binary
+
+        probs = torch.rand(num_features)
+        should_mask = probs < 0.15
+        num_hits = should_mask.sum().item()
+
+        if num_hits > 0:
+             num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
+
+             for _ in range(num_hits):
+                 # Select random positions
+                 positions = torch.randperm(self.sequence_length)[:num_positions]
+                 mask_binary[positions] = True
         
         return mask_binary
