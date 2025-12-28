@@ -2,6 +2,7 @@
 
 from typing import Dict, List, Optional
 
+import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -58,6 +59,28 @@ class PretrainDataset(Dataset):
             self.price_feature_indices = price_feature_indices
 
         self._precompute_volatility_targets()
+        self._precompute_high_vol_masks()
+
+    def _precompute_high_vol_masks(self) -> None:
+        """Precompute high volatility masks for all samples to speed up __getitem__.
+
+        This avoids calculating std and quantile for every sample on every access.
+        """
+        # Calculate volatility for all samples: (N, L, F) -> (N, L)
+        # Using the specified price feature indices
+        price_features = self.X[:, :, self.price_feature_indices]
+        # std over the feature dimension (dim 2)
+        price_volatility = torch.std(price_features, dim=2)  # Shape (N, L)
+
+        # Calculate 80th percentile threshold for each sample
+        # quantile over time dimension (dim 1)
+        # quantile requires float32
+        # Shape (N,)
+        thresholds = torch.quantile(price_volatility, 0.8, dim=1)
+
+        # Create boolean mask where volatility > threshold
+        # Expand thresholds to (N, 1) for broadcasting
+        self.high_vol_masks = price_volatility > thresholds.unsqueeze(1) # Shape (N, L)
 
     def _precompute_volatility_targets(self) -> None:
         """Precompute volatility targets for all samples to speed up training."""
@@ -181,7 +204,7 @@ class PretrainDataset(Dataset):
         asset_id = self.asset_ids[idx]
         
         if self.masking_ratio > 0.0:
-            mask_binary = self._generate_smart_mask(original_sequence)
+            mask_binary = self._generate_smart_mask(idx, original_sequence)
             masked_sequence = original_sequence.clone()
             masked_sequence[mask_binary] = 0.0
         else:
@@ -203,10 +226,11 @@ class PretrainDataset(Dataset):
             "asset_id": asset_id,
         }
     
-    def _generate_smart_mask(self, sequence: torch.Tensor) -> torch.Tensor:
+    def _generate_smart_mask(self, idx: int, sequence: torch.Tensor) -> torch.Tensor:
         """Generate smart mask using volatility-aware and cross-asset strategies.
         
         Args:
+            idx: Sample index.
             sequence: Input sequence tensor (seq_len, n_features).
             
         Returns:
@@ -214,11 +238,12 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use python random for scalar checks (faster than numpy)
+        use_smart_masking = random.random() < self.smart_masking_prob
+        use_cross_asset = random.random() < self.cross_asset_masking_prob
         
         if use_smart_masking:
-            mask_binary = self._volatility_aware_mask(sequence, mask_binary)
+            mask_binary = self._volatility_aware_mask(idx, mask_binary)
         
         if use_cross_asset:
             mask_binary = self._cross_asset_mask(sequence, mask_binary)
@@ -230,43 +255,50 @@ class PretrainDataset(Dataset):
         if current_masked_count < target_masked_count:
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
+
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            # (~mask_binary) is bool. nonzero() gives indices.
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
-            if len(unmasked_indices) > 0:
+            if unmasked_indices.size(0) > 0:
                 # Limit needed to available unmasked spots
-                needed = min(needed, len(unmasked_indices))
+                needed = min(needed, unmasked_indices.size(0))
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
+                # Use torch.randperm for fast random sampling
+                perm = torch.randperm(unmasked_indices.size(0))
+                selected_indices_idx = perm[:needed]
+                new_mask_indices = unmasked_indices[selected_indices_idx]
+
                 mask_binary[new_mask_indices] = True
         
         return mask_binary
     
     def _volatility_aware_mask(
-        self, sequence: torch.Tensor, mask_binary: torch.Tensor
+        self, idx: int, mask_binary: torch.Tensor
     ) -> torch.Tensor:
         """Mask high-volatility periods (important market events).
         
         Args:
-            sequence: Input sequence (seq_len, n_features).
+            idx: Sample index (to access precomputed mask).
             mask_binary: Current mask to update.
             
         Returns:
             Updated mask.
         """
-        # Use configurable price feature indices instead of hardcoded slice
-        price_features = sequence[:, self.price_feature_indices]
+        # Retrieve precomputed high volatility mask for this sample
+        high_vol_mask = self.high_vol_masks[idx]
         
-        price_volatility = torch.std(price_features, dim=1)
+        # Get indices of high volatility
+        high_vol_indices = high_vol_mask.nonzero(as_tuple=True)[0]
         
-        high_vol_threshold = torch.quantile(price_volatility, 0.8)
-        high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
-        
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+        if high_vol_indices.size(0) > 0:
+            # Pick one random high-volatility index to mask
+            rand_idx = int(torch.randint(0, high_vol_indices.size(0), (1,)).item())
+            mask_idx = high_vol_indices[rand_idx].item()
+
+            # Determine mask length (1 to 3)
+            mask_length = int(torch.randint(1, 4, (1,)).item())
+
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -285,14 +317,21 @@ class PretrainDataset(Dataset):
             Updated mask.
         """
         # Use configurable price feature indices
+        # We iterate over price features to randomly mask some of them
+        # Note: This logic seems to mask TIME steps based on feature iteration?
+        # Original logic: for each feat_idx, if rand < 0.15, pick random time positions.
+        # This means multiple features trigger multiple time masks.
+
+        # Optimize: Avoid loop if possible, or make it fast.
+        # Since we just mark mask_binary positions, we can do it simply.
         
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
+        for _ in self.price_feature_indices:
+            if random.random() < 0.15:
                 num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
+
+                # Torch vectorized random choice
+                positions = torch.randperm(self.sequence_length)[:num_positions]
+
                 mask_binary[positions] = True
         
         return mask_binary
