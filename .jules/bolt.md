@@ -1,0 +1,3 @@
+## 2024-02-14 - PretrainDataset Optimization
+**Learning:** In PyTorch Datasets, mixing `numpy.random` calls (especially in `__getitem__`) with PyTorch tensors introduces significant overhead due to context switching and lack of vectorization. Replacing `np.random.choice` and `np.random.random` with `torch.randperm`, `torch.randint`, and `torch.rand` provided a ~40-50% speedup (from ~2200 to ~3200 items/sec) in `__getitem__`.
+**Action:** When implementing custom Datasets that return tensors, stick to `torch` random functions and operations exclusively to maximize throughput and ensure better reproducibility with `torch.manual_seed`.
