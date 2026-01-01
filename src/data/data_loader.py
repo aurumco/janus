@@ -91,12 +91,7 @@ class DataLoaderFactory:
         self.sequence_length = sequence_length
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
-        # Force CPU preprocessing for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
-        if mode == 'finetune':
-            self.use_gpu_preprocess = False
-        else:
-            self.use_gpu_preprocess = use_gpu_preprocess
+        self.use_gpu_preprocess = use_gpu_preprocess
 
         self.use_streaming_fallback = use_streaming_fallback
         self.verbose = verbose
@@ -203,6 +198,7 @@ class DataLoaderFactory:
         result = {
             "features_path": None,
             "asset_ids_path": None,
+            "targets_path": None,
             "n_timesteps": None,
             "n_features": None,
             "X": None,
@@ -210,15 +206,12 @@ class DataLoaderFactory:
             "data_splits": None
         }
 
-        # Force CPU split for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
-        force_cpu = (self.mode == 'finetune')
-
-        if gdata is not None and self.use_gpu_preprocess and not force_cpu:
-            features_path, asset_ids_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
+        if gdata is not None and self.use_gpu_preprocess:
+            features_path, asset_ids_path, targets_path, n_timesteps, n_features = self.processing_strategy.process_gpu(gdata)
             result.update({
                 "features_path": features_path,
                 "asset_ids_path": asset_ids_path,
+                "targets_path": targets_path,
                 "n_timesteps": n_timesteps,
                 "n_features": n_features
             })
@@ -368,6 +361,10 @@ class DataLoaderFactory:
         else:
             if self.use_streaming_fallback:
                 train_dataset, val_dataset, test_dataset = self._create_streaming_finetune_datasets()
+            elif processed_data["features_path"] is not None:
+                train_dataset, val_dataset, test_dataset = self._create_memmap_finetune_datasets(
+                    processed_data, train_end, val_end, n_samples
+                )
             else:
                 train_dataset, val_dataset, test_dataset = self._create_memory_finetune_datasets(
                     processed_data["data_splits"]
@@ -487,6 +484,81 @@ class DataLoaderFactory:
             Subset(full_dataset, range(0, train_end)),
             Subset(full_dataset, range(train_end, val_end)),
             Subset(full_dataset, range(val_end, n_samples))
+        )
+
+    def _create_memmap_finetune_datasets(
+        self,
+        processed_data: Dict[str, Any],
+        train_end: int,
+        val_end: int,
+        n_samples: int
+    ) -> Tuple[Dataset, Dataset, Dataset]:
+        """Create fine-tuning datasets backed by memory maps."""
+
+        # Load memmaps
+        n_timesteps = processed_data["n_timesteps"]
+        n_features = processed_data["n_features"]
+
+        features_mmap = np.memmap(
+            processed_data["features_path"],
+            dtype=np.float32,
+            mode='r',
+            shape=(n_timesteps, n_features)
+        )
+
+        targets_path = processed_data.get("targets_path")
+        if targets_path:
+            # Check if we can infer target dim or if it's 1D
+            # LazyFineTuneDataset expects 1D or 2D.
+            # process_gpu writes (N,) or (N, D).
+            # We need to peek at the file size or assume from strategy?
+            # Actually, np.memmap needs shape.
+            # Strategy: Try 1D first, if size mismatch, try infer?
+            # Better: DataLoaderFactory doesn't know D.
+            # But process_gpu calculated n_timesteps.
+            # Size of file in floats = n_timesteps * D.
+            import os
+            size_bytes = os.path.getsize(targets_path)
+            size_floats = size_bytes // 4
+            target_dim = size_floats // n_timesteps
+
+            t_shape = (n_timesteps,) if target_dim == 1 else (n_timesteps, target_dim)
+
+            targets_mmap = np.memmap(
+                targets_path,
+                dtype=np.float32,
+                mode='r',
+                shape=t_shape
+            )
+        else:
+            # Fallback if no targets (should not happen in finetune usually)
+            targets_mmap = np.zeros(n_timesteps, dtype=np.float32)
+
+        def create_subset(start, end):
+            if start >= end:
+                return None
+
+            # Slice the memmaps for the subset
+            # IMPORTANT: LazyFineTuneDataset takes the WHOLE array and slices internally by index.
+            # But here we want to pass a VIEW of the subset?
+            # LazyFineTuneDataset.__init__ takes (features, targets).
+            # If we pass features[start:end], it's a slice.
+            # Does it copy? np.memmap slice returns a new memmap object (view) usually.
+            # Let's trust it works as view.
+
+            feat_subset = features_mmap[start:end]
+            tgt_subset = targets_mmap[start:end]
+
+            return LazyFineTuneDataset(
+                features=feat_subset,
+                targets=tgt_subset,
+                sequence_length=self.sequence_length
+            )
+
+        return (
+            create_subset(0, train_end),
+            create_subset(train_end, val_end),
+            create_subset(val_end, n_samples)
         )
 
     def _create_memory_finetune_datasets(self, splits: Dict[str, Any]) -> Tuple[Dataset, Dataset, Dataset]:

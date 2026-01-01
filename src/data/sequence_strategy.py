@@ -110,14 +110,15 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         
         return X, y
 
-    def process_gpu(self, parquet_path: str) -> Tuple[str, str, int, int]:
+    def process_gpu(self, parquet_path: str) -> Tuple[str, str, Optional[str], int, int]:
         """GPU-accelerated chunked processing writing base features memmap.
 
         Args:
             parquet_path: Path to parquet file to read in chunks.
 
         Returns:
-            Tuple (features_path, asset_ids_path, n_timesteps, n_features) for streaming dataset.
+            Tuple (features_path, asset_ids_path, targets_path, n_timesteps, n_features).
+            targets_path may be None if no target_column is specified.
         """
         import cupy as cp
         import cudf
@@ -144,8 +145,18 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         if len(feature_cols) == 0:
             raise ValueError("No valid feature columns available on GPU path")
 
+        # Determine target columns
+        target_cols = []
+        if self.target_column is not None:
+            if isinstance(self.target_column, list):
+                target_cols = [c for c in self.target_column if c in schema_cols]
+            elif self.target_column in schema_cols:
+                target_cols = [self.target_column]
+
         n_timesteps = total_rows
         n_features = len(feature_cols)
+        n_targets = len(target_cols)
+
         if n_timesteps < self.sequence_length:
             raise ValueError(
                 f"Not enough data points. Need at least {self.sequence_length}, got {n_timesteps}"
@@ -154,9 +165,16 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         tmpdir = "/kaggle/working" if os.path.exists("/kaggle/working") else tempfile.gettempdir()
         features_path = os.path.join(tmpdir, f"features_{os.getpid()}.dat")
         asset_ids_path = os.path.join(tmpdir, f"asset_ids_{os.getpid()}.dat")
+        targets_path = os.path.join(tmpdir, f"targets_{os.getpid()}.dat") if n_targets > 0 else None
         
         features_mmap = np.memmap(features_path, dtype=np.float32, mode='w+', shape=(n_timesteps, n_features))
         asset_ids_mmap = np.memmap(asset_ids_path, dtype=np.int64, mode='w+', shape=(n_timesteps,))
+
+        targets_mmap = None
+        if targets_path is not None:
+            # If single target, shape is (N,), if multiple, (N, D)
+            t_shape = (n_timesteps,) if n_targets == 1 else (n_timesteps, n_targets)
+            targets_mmap = np.memmap(targets_path, dtype=np.float32, mode='w+', shape=t_shape)
 
         read_chunk_size = 500000
         print(f"  GPU chunked read: {n_timesteps} rows, chunk={read_chunk_size}")
@@ -177,6 +195,8 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             missing_cols = [c for c in feature_cols if c not in present_cols]
             for mc in missing_cols:
                 chunk_pd[mc] = 0.0
+
+            # Process Features
             feat_pd = chunk_pd[feature_cols]
             chunk = cudf.from_pandas(feat_pd)
             gfeat = chunk.to_cupy().astype(cp.float32)
@@ -187,12 +207,37 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
             actual = end_write - written
             features_mmap[written:end_write] = feat_cpu[:actual]
             
+            # Process Asset IDs
             if 'asset_id' in chunk_pd.columns:
                 aids = chunk_pd['asset_id'].values.astype(np.int64)
             else:
                 aids = np.zeros(chunk_len, dtype=np.int64)
             asset_ids_mmap[written:end_write] = aids[:actual]
             
+            # Process Targets
+            if targets_mmap is not None:
+                # Fill missing target columns with 0.0 if not present (safeguard)
+                present_targets = [c for c in target_cols if c in chunk_pd.columns]
+                missing_targets = [c for c in target_cols if c not in present_targets]
+                for mt in missing_targets:
+                    chunk_pd[mt] = 0.0
+
+                tgt_pd = chunk_pd[target_cols]
+                # If single target, Series -> array (N,)
+                # If multiple, DataFrame -> array (N, D)
+                # cudf handling for speed if available?
+                # Using cudf for targets too for consistency
+                t_chunk = cudf.from_pandas(tgt_pd)
+                gtgt = t_chunk.to_cupy().astype(cp.float32)
+                tgt_cpu = cp.asnumpy(gtgt)
+
+                # If n_targets == 1, tgt_cpu might be (N, 1) or (N,). Ensure (N,)
+                if n_targets == 1 and tgt_cpu.ndim == 2:
+                    tgt_cpu = tgt_cpu.flatten()
+
+                targets_mmap[written:end_write] = tgt_cpu[:actual]
+                del t_chunk, gtgt, tgt_cpu
+
             written = end_write
             if pbar:
                 pbar.update(actual)
@@ -209,7 +254,11 @@ class SequenceProcessingStrategy(DataProcessingStrategy):
         asset_ids_mmap.flush()
         del features_mmap, asset_ids_mmap
         
-        return features_path, asset_ids_path, written, n_features
+        if targets_mmap is not None:
+            targets_mmap.flush()
+            del targets_mmap
+
+        return features_path, asset_ids_path, targets_path, written, n_features
 
     def _create_sequences(
         self,
