@@ -66,7 +66,7 @@ class PretrainDataset(Dataset):
         # Use configurable price column index
         target_idx = self.price_column_idx
         if target_idx >= self.n_features:
-            target_idx = 0 # Fallback if invalid
+            target_idx = 0  # Fallback if invalid
 
         # Vectorized calculation using unfold
         # We need to compute std(diff(future_prices)) for each idx.
@@ -106,7 +106,7 @@ class PretrainDataset(Dataset):
             # Since unfolding creates a view, it's cheap. But operations on it are expensive.
             # We chunk the operations.
 
-            prices_source = prices[1:] # Shift by 1
+            prices_source = prices[1:]  # Shift by 1
 
             for start_i in range(0, valid_n, chunk_size):
                 end_i = min(start_i + chunk_size, valid_n)
@@ -128,12 +128,12 @@ class PretrainDataset(Dataset):
                     break
 
                 # unfold(dim, size, step)
-                windows = sub_slice.unfold(0, lookahead, 1) # (B, L, lookahead)
+                windows = sub_slice.unfold(0, lookahead, 1)  # (B, L, lookahead)
 
                 # We want diff along the window dimension (dim 2)
                 # windows: (B, L, lookahead)
                 # diffs: windows[..., 1:] - windows[..., :-1]
-                diffs = windows[:, :, 1:] - windows[:, :, :-1] # (B, L, lookahead-1)
+                diffs = windows[:, :, 1:] - windows[:, :, :-1]  # (B, L, lookahead-1)
 
                 # Std over last two dims (L * (lookahead-1))
                 # torch.std doesn't support multiple dims until recently?
@@ -179,7 +179,7 @@ class PretrainDataset(Dataset):
         # The DataLoader will copy it when batching anyway.
         original_sequence = self.X[idx]
         asset_id = self.asset_ids[idx]
-        
+
         if self.masking_ratio > 0.0:
             mask_binary = self._generate_smart_mask(original_sequence)
             masked_sequence = original_sequence.clone()
@@ -191,7 +191,7 @@ class PretrainDataset(Dataset):
             # But consistent behavior suggests we should likely return a copy or view.
             # Here we return the view as original_sequence, and masked_sequence is same.
             masked_sequence = original_sequence
-        
+
         # Use precomputed volatility
         volatility = self.volatility_targets[idx] * 100.0
 
@@ -202,27 +202,28 @@ class PretrainDataset(Dataset):
             "volatility_target": volatility.unsqueeze(0),
             "asset_id": asset_id,
         }
-    
+
     def _generate_smart_mask(self, sequence: torch.Tensor) -> torch.Tensor:
         """Generate smart mask using volatility-aware and cross-asset strategies.
-        
+
         Args:
             sequence: Input sequence tensor (seq_len, n_features).
-            
+
         Returns:
             Binary mask tensor (seq_len,).
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
-        
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
-        
+
+        # Use torch.rand instead of np.random for better multiprocess seeding
+        use_smart_masking = torch.rand(1).item() < self.smart_masking_prob
+        use_cross_asset = torch.rand(1).item() < self.cross_asset_masking_prob
+
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
-        
+
         if use_cross_asset:
             mask_binary = self._cross_asset_mask(sequence, mask_binary)
-        
+
         # Ensure we meet the minimum masking ratio
         current_masked_count = mask_binary.sum().item()
         target_masked_count = int(self.sequence_length * self.masking_ratio)
@@ -231,68 +232,87 @@ class PretrainDataset(Dataset):
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
             if len(unmasked_indices) > 0:
                 # Limit needed to available unmasked spots
                 needed = min(needed, len(unmasked_indices))
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
-                mask_binary[new_mask_indices] = True
-        
+                # Optimized random choice using torch.randperm
+                perm = torch.randperm(len(unmasked_indices))
+                selected_indices = unmasked_indices[perm[:needed]]
+                mask_binary[selected_indices] = True
+
         return mask_binary
-    
+
     def _volatility_aware_mask(
         self, sequence: torch.Tensor, mask_binary: torch.Tensor
     ) -> torch.Tensor:
         """Mask high-volatility periods (important market events).
-        
+
         Args:
             sequence: Input sequence (seq_len, n_features).
             mask_binary: Current mask to update.
-            
+
         Returns:
             Updated mask.
         """
         # Use configurable price feature indices instead of hardcoded slice
         price_features = sequence[:, self.price_feature_indices]
-        
+
         price_volatility = torch.std(price_features, dim=1)
-        
-        high_vol_threshold = torch.quantile(price_volatility, 0.8)
-        high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
-        
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+
+        # Optimization: Use topk instead of quantile + nonzero
+        # Top 20% volatility
+        k = int(0.2 * self.sequence_length)
+        if k > 0:
+            # torch.topk returns (values, indices)
+            _, high_vol_indices = torch.topk(price_volatility, k)
+
+            # Pick one random index from the high vol indices
+            # torch.randint is faster than np.random
+            rand_idx = torch.randint(0, len(high_vol_indices), (1,)).item()
+            mask_idx = high_vol_indices[rand_idx].item()
+
+            mask_length = torch.randint(1, 4, (1,)).item()
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
-        
+
         return mask_binary
-    
+
     def _cross_asset_mask(
         self, sequence: torch.Tensor, mask_binary: torch.Tensor
     ) -> torch.Tensor:
         """Mask cross-asset correlated features.
-        
+
         Args:
             sequence: Input sequence (seq_len, n_features).
             mask_binary: Current mask to update.
-            
+
         Returns:
             Updated mask.
         """
-        # Use configurable price feature indices
-        
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
-                num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
+        # Optimized: Avoid loop over features
+        n_feats = len(self.price_feature_indices)
+        if n_feats == 0:
+            return mask_binary
+
+        # Determine how many features trigger masking
+        probs = torch.rand(n_feats)
+        triggered_count = (probs < 0.15).sum().item()
+
+        if triggered_count > 0:
+            num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
+
+            # For each triggered feature, we mask 'num_positions' random spots.
+            # We can do this in a loop or batch. Since triggered_count is small, loop is fine.
+            # But we can optimize by just picking indices once if we don't care about overlapping "events"
+            # distinctness per feature.
+            # The original code looped and applied mask independently (unioned).
+
+            for _ in range(triggered_count):
+                perm = torch.randperm(self.sequence_length)
+                positions = perm[:num_positions]
                 mask_binary[positions] = True
-        
+
         return mask_binary
