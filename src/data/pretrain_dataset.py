@@ -214,8 +214,9 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use torch.rand instead of np.random
+        use_smart_masking = torch.rand(1).item() < self.smart_masking_prob
+        use_cross_asset = torch.rand(1).item() < self.cross_asset_masking_prob
         
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
@@ -231,15 +232,18 @@ class PretrainDataset(Dataset):
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            # Optimize: Keep in torch, avoid .numpy()
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
-            if len(unmasked_indices) > 0:
+            if unmasked_indices.size(0) > 0:
                 # Limit needed to available unmasked spots
-                needed = min(needed, len(unmasked_indices))
+                needed = min(needed, unmasked_indices.size(0))
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
+                # Use torch.randperm for sampling without replacement
+                perm = torch.randperm(unmasked_indices.size(0))
+                selected_indices_idx = perm[:needed]
+                new_mask_indices = unmasked_indices[selected_indices_idx]
+
                 mask_binary[new_mask_indices] = True
         
         return mask_binary
@@ -261,12 +265,17 @@ class PretrainDataset(Dataset):
         
         price_volatility = torch.std(price_features, dim=1)
         
-        high_vol_threshold = torch.quantile(price_volatility, 0.8)
-        high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
+        # Optimize: Use topk instead of quantile for speed (approx 20%)
+        # quantile requires sorting or partial sorting on CPU usually
+        k = max(1, int(self.sequence_length * 0.2))
+        _, high_vol_indices = torch.topk(price_volatility, k)
         
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+        if high_vol_indices.size(0) > 0:
+            # Pick one random index from high volatility regions
+            idx = torch.randint(0, high_vol_indices.size(0), (1,)).item()
+            mask_idx = high_vol_indices[idx]
+
+            mask_length = torch.randint(1, 4, (1,)).item()
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -284,15 +293,29 @@ class PretrainDataset(Dataset):
         Returns:
             Updated mask.
         """
-        # Use configurable price feature indices
+        # Optimize: Vectorize the loop over price_feature_indices
+        # logic: for each feature, with 15% prob, mask random positions
+
+        num_features = len(self.price_feature_indices)
+        if num_features == 0:
+            return mask_binary
+
+        # Determine which features trigger masking
+        probs = torch.rand(num_features)
+        hits = (probs < 0.15).nonzero(as_tuple=True)[0]
         
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
-                num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
+        num_hits = hits.size(0)
+        if num_hits > 0:
+            num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
+
+            # For each hit, we want to mask num_positions random indices.
+            # We can do this in a loop or purely vectorized.
+            # Since num_hits is small (usually <= 4), a loop is fine, but let's try to be clean.
+            # Actually, just masking random indices for each hit.
+
+            for _ in range(num_hits):
+                # randperm is efficient for small seq_len (256)
+                positions = torch.randperm(self.sequence_length)[:num_positions]
                 mask_binary[positions] = True
         
         return mask_binary
