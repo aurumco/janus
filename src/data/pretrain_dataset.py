@@ -214,8 +214,9 @@ class PretrainDataset(Dataset):
         """
         mask_binary = torch.zeros(self.sequence_length, dtype=torch.bool)
         
-        use_smart_masking = np.random.random() < self.smart_masking_prob
-        use_cross_asset = np.random.random() < self.cross_asset_masking_prob
+        # Use torch.rand instead of np.random.random
+        use_smart_masking = torch.rand(1).item() < self.smart_masking_prob
+        use_cross_asset = torch.rand(1).item() < self.cross_asset_masking_prob
         
         if use_smart_masking:
             mask_binary = self._volatility_aware_mask(sequence, mask_binary)
@@ -231,15 +232,15 @@ class PretrainDataset(Dataset):
             # Add random masking to meet the quota
             needed = target_masked_count - current_masked_count
             # Get indices that are not yet masked
-            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0].numpy()
+            unmasked_indices = (~mask_binary).nonzero(as_tuple=True)[0]
 
-            if len(unmasked_indices) > 0:
+            if unmasked_indices.numel() > 0:
                 # Limit needed to available unmasked spots
-                needed = min(needed, len(unmasked_indices))
+                needed = min(needed, unmasked_indices.numel())
 
-                new_mask_indices = np.random.choice(
-                    unmasked_indices, size=needed, replace=False
-                )
+                # Use torch.randperm instead of np.random.choice
+                perm = torch.randperm(unmasked_indices.numel())[:needed]
+                new_mask_indices = unmasked_indices[perm]
                 mask_binary[new_mask_indices] = True
         
         return mask_binary
@@ -261,12 +262,30 @@ class PretrainDataset(Dataset):
         
         price_volatility = torch.std(price_features, dim=1)
         
+        # Use torch.topk instead of quantile for speed if we just want top 20%
+        # But to match logic, let's stick to quantile or similar logic if it's correct.
+        # Actually topk is faster than sort/quantile.
+        # Top 20% of sequence_length
+        k = max(1, int(self.sequence_length * 0.2))
+
+        # Note: torch.quantile can be slow on CPU. topk is generally optimized.
+        # But we need indices where val > threshold.
+        # topk gives values and indices directly.
+        # The original logic used quantile to set a threshold, then found all indices > threshold.
+        # Then it picked *one* random index from those high vol indices.
+
+        # Faster approach: Get top K indices, pick one randomly.
+        # This is roughly equivalent if the distribution isn't weirdly flat.
+
+        # Let's keep the logic close to original but use pure torch.
+
         high_vol_threshold = torch.quantile(price_volatility, 0.8)
         high_vol_indices = (price_volatility > high_vol_threshold).nonzero(as_tuple=True)[0]
         
-        if len(high_vol_indices) > 0:
-            mask_idx = high_vol_indices[np.random.randint(len(high_vol_indices))]
-            mask_length = np.random.randint(1, 4)
+        if high_vol_indices.numel() > 0:
+            # torch.randint
+            mask_idx = high_vol_indices[torch.randint(0, high_vol_indices.numel(), (1,)).item()].item()
+            mask_length = torch.randint(1, 4, (1,)).item()
             end_idx = min(mask_idx + mask_length, self.sequence_length)
             mask_binary[mask_idx:end_idx] = True
         
@@ -284,15 +303,46 @@ class PretrainDataset(Dataset):
         Returns:
             Updated mask.
         """
-        # Use configurable price feature indices
+        # Original logic:
+        # for feat_idx in self.price_feature_indices:
+        #     if np.random.random() < 0.15:
+        #         num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
+        #         positions = np.random.choice(self.sequence_length, size=num_positions, replace=False)
+        #         mask_binary[positions] = True
         
-        for feat_idx in self.price_feature_indices:
-            if np.random.random() < 0.15:
-                num_positions = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
-                positions = np.random.choice(
-                    self.sequence_length, size=num_positions, replace=False
-                )
-                # Optimize: Vectorized assignment
+        # Vectorized replacement:
+        # 1. Determine which features trigger masking (prob 0.15)
+        # 2. For each triggered feature, select random positions.
+
+        # Since mask_binary is flattened (OR-ed), we can just count how many times we trigger.
+        # Prob of trigger = 0.15 per feature.
+        # This is basically a binomial distribution.
+
+        num_features = len(self.price_feature_indices)
+        triggers = torch.rand(num_features) < 0.15
+        num_triggers = triggers.sum().item()
+        
+        if num_triggers > 0:
+            # If any feature triggers, we need to mask some positions.
+            # In the loop, each trigger would mask `num_positions` random spots.
+            # We can do this efficiently by selecting (num_triggers * num_positions) indices
+            # and setting them to true. (Overlaps are fine, logic matches "OR"ing masks).
+
+            num_positions_per_trigger = max(1, int(self.sequence_length * self.masking_ratio * 0.5))
+
+            # Total positions to attempt to mask (with replacement allowed between triggers)
+            # Actually, the original loop did `replace=False` per trigger.
+            # So each trigger picked `num_positions` distinct indices.
+
+            # We can generate `num_triggers` sets of indices.
+            # Or simpler: just generate (num_triggers * num_positions) random indices from 0..seq_len
+            # But we need `replace=False` within chunks of `num_positions`.
+
+            # Since seq_len is typically 256 and num_positions small, collision is low.
+            # Let's do a loop over triggers, but use torch ops.
+
+            for _ in range(num_triggers):
+                positions = torch.randperm(self.sequence_length)[:num_positions_per_trigger]
                 mask_binary[positions] = True
-        
+
         return mask_binary
