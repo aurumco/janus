@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 import gc
-import time
 import numpy as np
 
 import pandas as pd
@@ -91,8 +90,8 @@ class DataLoaderFactory:
         self.sequence_length = sequence_length
         self.smart_masking_prob = smart_masking_prob
         self.cross_asset_masking_prob = cross_asset_masking_prob
+
         # Force CPU preprocessing for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
         if mode == 'finetune':
             self.use_gpu_preprocess = False
         else:
@@ -121,23 +120,20 @@ class DataLoaderFactory:
             data, gdata = self._load_data()
 
             # 2. Process Data (GPU or CPU)
-            # We split the process to ensure data is deleted before tensor allocation
             processed_data = self._process_data(data, gdata)
 
-            # CPU PATH: We have temporary splits, need to delete data, then process
-            if "_temp_splits" in processed_data:
-                # 2b. Explicitly delete raw data before heavy processing
+            # Explicitly delete raw data references if they exist
+            if data is not None:
                 del data
-                data = None
-                gc.collect()
+            data = None
+            gc.collect()
 
-                # 2c. Process the splits into tensors
-                processed_data["data_splits"] = self._process_splits(processed_data.pop("_temp_splits"))
-            else:
-                # GPU PATH or other path where data is already handled or not used
-                if data is not None:
-                    del data
-                data = None
+            # CPU PATH: If we have temporary splits, process them now
+            if "_temp_splits" in processed_data:
+                splits = processed_data.pop("_temp_splits")
+                # This step converts DataFrame splits into Tensors/Datasets
+                processed_data["data_splits"] = self._process_splits(splits)
+                del splits
                 gc.collect()
 
             # 3. Create Datasets
@@ -211,7 +207,6 @@ class DataLoaderFactory:
         }
 
         # Force CPU split for finetuning to ensure data_splits is populated
-        # This fixes the TypeError in _create_memory_finetune_datasets
         force_cpu = (self.mode == 'finetune')
 
         if gdata is not None and self.use_gpu_preprocess and not force_cpu:
@@ -227,60 +222,9 @@ class DataLoaderFactory:
                 self._log_memory("After GPU process")
 
         elif data is not None:
-            # CPU processing logic split to ensure memory safety
+            # We create splits but DO NOT process them into tensors yet.
+            # This allows the caller to delete the full 'data' DataFrame before allocating tensors.
             splits = self._create_splits(data)
-
-            # IMPORTANT: The caller is responsible for deleting 'data' immediately
-            # after we return from _create_splits if we were refactoring further,
-            # but here we can't easily signal the caller to delete 'data' halfway.
-            # So instead, we just create the splits here and return them.
-            # But wait, we need to process the splits.
-            # The 'data' variable is a reference.
-
-            # To strictly follow the "Delete Data -> Process Splits" flow:
-            # We must process splits AFTER 'data' is deleted.
-            # Since we cannot delete the caller's reference to 'data',
-            # we rely on the caller to not use 'data' anymore, but the object exists.
-
-            # However, we can modify the flow:
-            # We return the splits (DataFrames) in a temporary structure,
-            # then the caller deletes 'data', then calls a new method to process splits.
-            # BUT, to keep the interface simple, we can do the splitting and processing here
-            # IF we accept that 'data' reference is still held by caller.
-            # The issue is that `_process_data` takes `data`.
-
-            # Solution: We can't delete caller's reference.
-            # The original code had everything in one function so it could `del data`.
-            # To replicate this, we need to ensure `data` is not held.
-            # Since `data` is passed as argument, we can't clear caller's scope.
-            pass
-
-            # Since I am already inside _process_data, I will proceed with the implementation
-            # that assumes the caller will handle `del data` if I return early? No.
-
-            # The only way to strictly enforce "Create Splits -> Delete Data -> Process"
-            # with this signature is if we don't process here, OR if the caller handles the flow.
-            # I will refactor `_process_data` to `_create_splits_and_process`.
-            # Actually, I'll stick to the current implementation but verify correct behavior:
-            # 1. Create split copies (train_df, etc.)
-            # 2. del data (removes local reference)
-            # 3. gc.collect()
-            # 4. process splits.
-
-            # This works if the caller doesn't keep other references.
-            # In `create_data_loaders`, `data` is a local var.
-            # If `_process_data` finishes, `data` is still in `create_data_loaders`.
-            # So `del data` inside `_process_data` only deletes the local arg.
-            # The large object remains in memory until `_process_data` returns and `create_data_loaders` deletes it.
-            # BUT `_process_data` creates the tensors! So we have Peak = Data + Splits + Tensors.
-
-            # To fix this, `_process_data` for CPU path must NOT do the tensor processing.
-            # It should just return the splits.
-            # Then `create_data_loaders` deletes `data`.
-            # Then we call a NEW method `_process_splits`.
-
-            splits = self._create_splits(data)
-            # We return the splits in a special key to signal the caller
             result["_temp_splits"] = splits
 
         return result
@@ -345,8 +289,6 @@ class DataLoaderFactory:
         if processed_data["n_timesteps"] is not None:
              n_samples = processed_data["n_timesteps"] - self.sequence_length + 1
         elif is_streaming or self.use_streaming_fallback:
-             # Streaming length estimation logic would go here,
-             # but we handle it inside dataset creation logic for streaming
              pass
 
         train_end = int(n_samples * self.train_ratio)
@@ -408,7 +350,6 @@ class DataLoaderFactory:
         n_samples: int
     ) -> Tuple[Dataset, Dataset, Dataset]:
 
-        # Local import to avoid environment-specific import errors
         try:
             from .pretrain_window_dataset import PretrainWindowDataset  # type: ignore
         except Exception:
