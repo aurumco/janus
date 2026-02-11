@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-satoshi: 'Satoshi', sans-serif;
+  --font-inter-display: 'InterDisplay', sans-serif;
+
+  /* Color Palette - Light Mode */
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 255, 255, 255;
+  --background-end-rgb: 255, 255, 255;
+  --card-background: #ffffff;
+  --card-border: #e5e7eb;
+
+  /* Status Colors */
+  --status-operational: #10B981; /* Green-500 */
+  --status-degraded: #F59E0B; /* Yellow-500 */
+  --status-outage: #EF4444; /* Red-500 */
+
+  --status-operational-bg: rgba(16, 185, 129, 0.1);
+  --status-degraded-bg: rgba(245, 158, 11, 0.1);
+  --status-outage-bg: rgba(239, 68, 68, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Color Palette - Dark Mode */
+    --foreground-rgb: 255, 255, 255;
+    --background-start-rgb: 10, 10, 10;
+    --background-end-rgb: 10, 10, 10;
+    --card-background: #171717;
+    --card-border: #262626;
+  }
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+  font-family: var(--font-satoshi);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-inter-display);
+}
+
+.font-satoshi {
+  font-family: var(--font-satoshi);
+}
+
+.font-inter-display {
+  font-family: var(--font-inter-display);
+}
